@@ -41,6 +41,20 @@
       "minPlayers": 1,
       "maxPlayers": 4,
       "module": "games/snowball/src/index.tsx"
+    },
+    {
+      "id": "dino-ski",
+      "name": "Dino Ski",
+      "team": "Équipe GameBOVH",
+      "version": "1.0.0",
+      "description": "Un dino à skis dévale la montagne. Saute au bon moment et va le plus loin possible !",
+      "en": {
+        "name": "Dino Ski",
+        "description": "A skiing dino rushes down the mountain. Jump at the right time and go as far as you can!"
+      },
+      "minPlayers": 1,
+      "maxPlayers": 2,
+      "module": "games/dino-ski/src/index.tsx"
     }
   ]
 }
