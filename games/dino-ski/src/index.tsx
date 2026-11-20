@@ -44,14 +44,46 @@ import {
   type Racer,
 } from './match.ts';
 
-/* ---------- Le fond : UNE seule image (ciel + décor + sol) ---------- */
-// Pour changer de fond, remplacez simplement cette ligne par votre image.
-// L'image est répétée horizontalement et défile avec le dino :
-// son bord gauche doit raccorder avec son bord droit.
-import BACKGROUND from './assets/fond.jpg';
-// Hauteur du sol dans l'image, de 0 (tout en haut) à 1 (tout en bas) :
-// c'est là que le dino pose ses skis. Pour fond.svg : 88 px sur 108 = 0.815.
-const GROUND_LINE = 88 / 108;
+/* ---------- Le fond : plusieurs calques superposés (parallaxe) ---------- */
+// Chaque calque est une image de 240 x 108 à fond transparent, répétée
+// horizontalement. Ils sont dessinés dans l'ordre de la liste : le premier
+// tout au fond, le dernier devant. Ensemble, ils donnent l'image complète.
+import ciel from './assets/fond/1-ciel.png';
+import lune from './assets/fond/2-lune.png';
+import montagne from './assets/fond/3-montagne.png';
+import nuages from './assets/fond/4-nuages.png';
+import sapinsLoin from './assets/fond/5-sapins-loin.png';
+import sapinsProches from './assets/fond/6-sapins-proches.png';
+import rochers from './assets/fond/7-rochers.png';
+import herbe from './assets/fond/8-herbe.png';
+import ligne from './assets/fond/9-ligne.png';
+
+// `speed` : vitesse de défilement du calque par rapport au dino.
+//   0   = ne bouge pas (très loin : le ciel)
+//   0.5 = défile deux fois moins vite que le dino
+//   1   = défile avec le sol, à la vitesse du dino
+// Plus un calque est loin, plus il est lent : c'est ce qui donne la profondeur.
+// `moon: true` : ce calque ne défile pas, il suit la progression de la partie
+// (voir drawMoon).
+const BACKGROUND_LAYERS = [
+  { url: ciel, speed: 0 },
+  { url: lune, speed: 0, moon: true },
+  { url: montagne, speed: 0.1 },
+  { url: nuages, speed: 0.2 },
+  { url: sapinsLoin, speed: 0.4 },
+  { url: sapinsProches, speed: 0.6 },
+  { url: rochers, speed: 1 },
+  { url: herbe, speed: 1 },
+  { url: ligne, speed: 1 },
+];
+// Où se trouve la lune dans 2-lune.png (en pixels de l'image de 240 x 108) :
+// de x = 213 à x = 230. Si vous changez l'image de la lune, mettez ces valeurs à jour.
+const MOON_LEFT = 213;
+const MOON_RIGHT = 230;
+const MOON_MARGIN = 10; // écart avec le bord de l'écran, au départ et à l'arrivée
+// Hauteur du sol dans les images, de 0 (tout en haut) à 1 (tout en bas) :
+// c'est là que le dino pose ses skis (le haut de l'herbe : 86 px sur 108).
+const GROUND_LINE = 86 / 108;
 
 /* ---------- Réglages ---------- */
 const DINO_SCREEN_X = 48; // position horizontale du dino dans sa moitié d'écran
@@ -134,7 +166,15 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
   const players = useRoomPlayers(ctx);
 
   const dinoImg = useMemo(() => loadImage(dinoUrl), []);
-  const backgroundImg = useMemo(() => loadImage(BACKGROUND), []);
+  const backgroundLayers = useMemo(
+    () =>
+      BACKGROUND_LAYERS.map((layer) => ({
+        img: loadImage(layer.url),
+        speed: layer.speed,
+        moon: layer.moon === true,
+      })),
+    [],
+  );
 
   const state = useRef({
     me: createDino(),
@@ -350,6 +390,34 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     { runWhilePaused: true },
   );
 
+  /**
+   * Où en est ce joueur dans la partie, de 0 (départ) à 1 (fin).
+   * La partie finit à WIN_DISTANCE mètres OU après MAX_DURATION_MS :
+   * on prend celle des deux qui est la plus avancée.
+   */
+  function laneProgress(lane: Lane): number {
+    if (state.result) return 1; // partie finie : la lune est arrivée à gauche
+    const byDistance = toMeters(lane.dino.x) / WIN_DISTANCE;
+    const byTime = state.elapsed / MAX_DURATION_MS;
+    return Math.min(1, Math.max(byDistance, byTime));
+  }
+
+  /**
+   * Dessine la lune : elle part à droite de l'écran (progress = 0)
+   * et arrive à gauche (progress = 1). Elle garde sa hauteur dans l'image.
+   */
+  function drawMoon(g: CanvasRenderingContext2D, img: HTMLImageElement, progress: number, top: number, h: number) {
+    if (!img.complete || img.naturalWidth === 0) return;
+    const scale = h / img.naturalHeight; // l'image est mise à la hauteur de la zone de jeu
+    const moonW = (MOON_RIGHT - MOON_LEFT) * scale;
+    const margin = MOON_MARGIN * scale;
+    const startX = width - margin - moonW; // tout à droite
+    const endX = margin; // tout à gauche
+    const moonX = startX + (endX - startX) * progress;
+    // On décale toute l'image pour que la lune tombe à moonX.
+    g.drawImage(img, Math.round(moonX - MOON_LEFT * scale), top, img.naturalWidth * scale, h);
+  }
+
   /** Dessine une moitié d'écran (fond, dino, textes). */
   function drawLane(g: CanvasRenderingContext2D, lane: Lane, top: number, h: number) {
     const groundY = top + Math.round(h * GROUND_LINE);
@@ -361,18 +429,14 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     g.rect(0, top, width, h);
     g.clip();
 
-    // Le fond : l'image est mise à la hauteur de la moitié d'écran,
-    // puis répétée côte à côte et décalée avec la caméra (elle défile).
-    if (backgroundImg.complete && backgroundImg.naturalWidth > 0) {
-      const tileW = Math.round((backgroundImg.naturalWidth * h) / backgroundImg.naturalHeight);
-      // (le "+ tileW) % tileW" garde le décalage positif, même quand camX < 0 au départ)
-      const offset = ((Math.floor(camX) % tileW) + tileW) % tileW;
-      for (let bx = -offset; bx < width; bx += tileW) {
-        g.drawImage(backgroundImg, bx, top, tileW, h);
-      }
-    } else {
-      g.fillStyle = PALETTE.night; // en attendant que l'image soit chargée
-      g.fillRect(0, top, width, h);
+    // Le fond : une couleur unie au cas où une image ne serait pas encore chargée,
+    // puis chaque calque, du plus lointain au plus proche.
+    g.fillStyle = PALETTE.night;
+    g.fillRect(0, top, width, h);
+    const progress = laneProgress(lane);
+    for (const layer of backgroundLayers) {
+      if (layer.moon) drawMoon(g, layer.img, progress, top, h);
+      else drawLayer(g, layer.img, camX * layer.speed, top, h);
     }
 
     // Le dino
@@ -438,6 +502,21 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
   }
 
   return <canvas {...canvasProps} />;
+}
+
+/**
+ * Dessine un calque du fond : l'image est mise à la hauteur `h`, répétée côte à côte
+ * et décalée de `scrollX` pixels vers la gauche (c'est ce qui la fait défiler).
+ */
+function drawLayer(g: CanvasRenderingContext2D, img: HTMLImageElement, scrollX: number, top: number, h: number) {
+  if (!img.complete || img.naturalWidth === 0) return;
+  const screenW = g.canvas.width;
+  const tileW = Math.round((img.naturalWidth * h) / img.naturalHeight);
+  // (le "+ tileW) % tileW" garde le décalage positif, même quand scrollX < 0 au départ)
+  const offset = ((Math.floor(scrollX) % tileW) + tileW) % tileW;
+  for (let x = -offset; x < screenW; x += tileW) {
+    g.drawImage(img, x, top, tileW, h);
+  }
 }
 
 /** Charge une image une fois ; on vérifie `complete` avant de la dessiner. */
