@@ -33,7 +33,7 @@ import {
   type GameProps,
 } from '@gamebovh/sdk';
 import dinoUrl from './assets/dino.jpg';
-import { createDino, DINO_SIZE, jump, stepDino, type Dino } from './dino.ts';
+import { createDino, DINO_SIZE, jump, moveHorizontal, stepDino, type Dino } from './dino.ts';
 import {
   checkEnd,
   formatClock,
@@ -91,11 +91,13 @@ const SEND_EVERY_MS = 80; // envoi de mon état environ 12 fois par seconde
 const SOLO_ID = 'solo'; // identifiant du joueur quand on joue seul
 
 /* ---------- Messages échangés entre les joueurs ---------- */
+/* ---------- Messages échangés entre les joueurs ---------- */
 type DinoMsg =
   | { type: 'jump' } // envoyé tout de suite, pour que le saut se voie sans attendre
   | {
       type: 'state';
       x: number;
+      offsetX: number;
       height: number;
       vy: number;
       onGround: boolean;
@@ -223,7 +225,7 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     if (!result || state.finished) return;
     state.finished = true;
     const me = result.racers.find((r) => r.id === myId());
-    const distance = me?.distance ?? toMeters(state.me.x);
+    const distance = me?.distance ?? toMeters(state.me.x + state.me.offsetX);
     let outcome: 'win' | 'lose' | 'draw' | undefined;
     if (ctx.multiplayer.room) {
       outcome = result.winnerId === null ? 'draw' : result.winnerId === myId() ? 'win' : 'lose';
@@ -260,12 +262,13 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
       if (paused) state.pausedOthers.add(from.id);
       else state.pausedOthers.delete(from.id);
     };
-    if (msg.type === 'jump') {
+if (msg.type === 'jump') {
       jump(other);
     } else if (msg.type === 'pause') {
       setPaused(msg.paused);
     } else if (msg.type === 'state') {
       other.x = msg.x;
+      other.offsetX = msg.offsetX;
       other.height = msg.height;
       other.vy = msg.vy;
       other.onGround = msg.onGround;
@@ -319,9 +322,13 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
       const iAmPaused = ctx.lifecycle.paused;
       const inRoom = ctx.multiplayer.room !== null;
 
-      if (!state.result) {
+if (!state.result) {
         /* 1. Mise à jour : mon dino (sauf en pause), puis ceux des autres (sauf s'ils sont en pause). */
-        if (!iAmPaused) stepDino(state.me, dt);
+        if (!iAmPaused) {
+          stepDino(state.me, dt);
+          const dir = (ctx.input.isDown('right') ? 1 : 0) - (ctx.input.isDown('left') ? 1 : 0);
+          moveHorizontal(state.me, dir as -1 | 0 | 1, dt);
+        }
         for (const [id, other] of state.others) {
           if (!state.pausedOthers.has(id)) stepDino(other, dt);
         }
@@ -337,6 +344,7 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
           ctx.multiplayer.send({
             type: 'state',
             x: d.x,
+            offsetX: d.offsetX,
             height: d.height,
             vy: d.vy,
             onGround: d.onGround,
@@ -352,9 +360,9 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
       /* 3. Fin de partie ? En salle, seul l'hôte décide (puis prévient les autres). */
       const amHost = !inRoom || playersRef.current.find((p) => p.isMe)?.isHost === true;
       if (!state.result && amHost) {
-        const racers: Racer[] = lanes.map((l) => ({
+         const racers: Racer[] = lanes.map((l) => ({
           id: l.id,
-          distance: toMeters(l.dino.x),
+          distance: toMeters(l.dino.x + l.dino.offsetX),
           thrown: l.stats.thrown,
           dodged: l.stats.dodged,
         }));
@@ -397,7 +405,7 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
    */
   function laneProgress(lane: Lane): number {
     if (state.result) return 1; // partie finie : la lune est arrivée à gauche
-    const byDistance = toMeters(lane.dino.x) / WIN_DISTANCE;
+    const byDistance = toMeters(lane.dino.x + lane.dino.offsetX) / WIN_DISTANCE;
     const byTime = state.elapsed / MAX_DURATION_MS;
     return Math.min(1, Math.max(byDistance, byTime));
   }
@@ -440,7 +448,7 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     }
 
     // Le dino
-    const dx = DINO_SCREEN_X;
+    const dx = Math.round(DINO_SCREEN_X + lane.dino.offsetX);
     const dy = Math.round(groundY - DINO_SIZE - lane.dino.height);
     if (dinoImg.complete && dinoImg.naturalWidth > 0) {
       g.drawImage(dinoImg, dx, dy, DINO_SIZE, DINO_SIZE);
@@ -448,10 +456,10 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
       g.fillStyle = PALETTE.pine;
       g.fillRect(dx, dy, DINO_SIZE, DINO_SIZE);
     }
-
     // Textes : nom du joueur (à sa couleur), distance, aide
+// Textes : nom du joueur (à sa couleur), distance, aide
     drawText(g, lane.name, 6, top + 6, { color: lane.color });
-    drawText(g, t.distance(toMeters(lane.dino.x)), 6, top + 18);
+    drawText(g, t.distance(toMeters(lane.dino.x + lane.dino.offsetX)), 6, top + 18);
     if (lane.isMe) drawText(g, t.hint, width - 6, top + 6, { color: PALETTE.gold, align: 'right' });
 
     // Joueur en pause : on assombrit sa moitié et on l'écrit au milieu.
