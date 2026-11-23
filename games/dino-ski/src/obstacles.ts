@@ -18,11 +18,20 @@ export interface Obstacle {
   resolved: boolean;
 }
 
-// Tailles adaptées aux proportions des sprites (en pixels)
+// Tailles adaptées aux proportions des sprites (en pixels).
+// `margin` : pixels ignorés à gauche et à droite pour les collisions (bords vides, bras fins) ;
+// `top`    : pixels ignorés en haut (sommet arrondi, chapeau).
+// Ces valeurs sont réglées pour que chaque obstacle soit sautable SANS toucher la croix.
 const OBSTACLE_VARIANTS = [
-  { width: 20, height: 15 }, // 0 : Tas de neige (large et bas)
-  { width: 24, height: 22 }, // 1 : Bonhomme de neige (plus haut)
+  { width: 20, height: 15, margin: 4, top: 3 }, // 0 : Tas de neige (large et bas)
+  { width: 24, height: 22, margin: 7, top: 5 }, // 1 : Bonhomme de neige (plus haut)
 ];
+
+// Espace libre entre deux obstacles (du bord droit de l'un au bord gauche du suivant).
+// Minimum : assez pour retomber après un saut et ressauter tranquillement.
+// Maximum : pas trop, pour qu'il se passe toujours quelque chose.
+const MIN_GAP = 100; // 10 m, environ 1,4 s à pleine vitesse
+const MAX_GAP = 190; // 19 m, environ 2,7 s
 
 /** Génère tous les obstacles de la course à partir de la graine `seed`. */
 export function generateObstacles(seed: number): Obstacle[] {
@@ -47,8 +56,8 @@ export function generateObstacles(seed: number): Obstacle[] {
       resolved: false,
     });
 
-    // Espacement aléatoire entre 140 px (14 m) et 280 px (28 m)
-    currentX += 140 + rand() * 140;
+    // Espace libre aléatoire entre MIN_GAP et MAX_GAP : jamais deux obstacles collés.
+    currentX += size.width + MIN_GAP + rand() * (MAX_GAP - MIN_GAP);
   }
 
   return obstacles;
@@ -70,13 +79,14 @@ export function checkObstacles(dino: Dino, obstacles: Obstacle[]): { hits: numbe
   for (const obs of obstacles) {
     if (obs.resolved) continue;
 
-    // Marge de tolérance pour ne pas toucher les branches fines du bonhomme de neige
-    const obsLeft = obs.x + 4;
-    const obsRight = obs.x + obs.width - 4;
+    // Marge de tolérance (bords vides du sprite, branches fines du bonhomme de neige)
+    const variant = OBSTACLE_VARIANTS[obs.kind] ?? OBSTACLE_VARIANTS[0];
+    const obsLeft = obs.x + variant.margin;
+    const obsRight = obs.x + obs.width - variant.margin;
 
     // 1. Test de collision (chevauchement horizontal ET dino pas assez haut)
     const overlapX = dinoRight > obsLeft && dinoLeft < obsRight;
-    const overlapY = dinoBottom < obs.height - 3;
+    const overlapY = dinoBottom < obs.height - variant.top;
 
     if (overlapX && overlapY) {
       obs.resolved = true;

@@ -8,7 +8,7 @@
  *   - `shown`  : celui qu'on dessine. Il avance tout seul et se rapproche
  *     doucement de `target` : les petites erreurs sont rattrapées en douceur.
  */
-import { createDino, jump, moveHorizontal, RUN_SPEED, stepDino, type Dino } from './dino.ts';
+import { createDino, currentSpeed, jump, moveHorizontal, stepDino, type Dino } from './dino.ts';
 
 /** Temps (ms) pour rattraper environ 63 % de l'écart avec `target`. Plus petit = plus réactif. */
 const SMOOTH_MS = 100;
@@ -42,11 +42,14 @@ export function stepRemote(r: RemoteDino, dt: number): void {
   const { target, shown } = r;
 
   // 1. La cible suit les règles du jeu, comme si on recevait un message à chaque image.
+  const speed = currentSpeed(target); // gelé = 0, ralenti = moins vite
   stepDino(target, dt);
   moveHorizontal(target, r.dir, dt);
 
-  // 2. Le dino affiché avance à la même vitesse...
-  shown.x += RUN_SPEED * dt;
+  // 2. Le dino affiché avance à la même vitesse (et est gelé / ralenti en même temps)...
+  shown.slowTimer = target.slowTimer;
+  shown.frozenTimer = target.frozenTimer;
+  shown.x += speed * dt;
   moveHorizontal(shown, r.dir, dt);
 
   // 3. ... puis se rapproche en douceur de la cible.

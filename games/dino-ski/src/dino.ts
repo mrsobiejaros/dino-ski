@@ -10,10 +10,13 @@ export const RUN_SPEED = 0.07; // vitesse vers la droite (pixels par ms)
 export const MOVE_SPEED = 0.12; // vitesse de déplacement gauche/droite à l'écran (pixels par ms)
 export const MAX_OFFSET_LEFT = -36; // limite gauche (48 - 36 = 12 px du bord gauche)
 export const MAX_OFFSET_RIGHT = 140; // limite droite (48 + 140 + 24 = 212 px sur 240)
-export const JUMP_SPEED = 0.34; // vitesse verticale au moment du saut
-export const GRAVITY = 0.001; // ce qui ramène le dino au sol
+// Saut : ~52 px de haut (le dino ne sort pas de sa moitié d'écran) et ~0,8 s en l'air,
+// assez long pour passer chaque obstacle sans toucher la croix.
+export const JUMP_SPEED = 0.26; // vitesse verticale au moment du saut
+export const GRAVITY = 0.00065; // ce qui ramène le dino au sol
 export const SLOW_DURATION_MS = 1500; // durée du ralentissement après un choc (ms)
 export const SLOW_FACTOR = 0.45; // vitesse réduite à 45 % pendant le choc
+export const FREEZE_DURATION_MS = 2000; // durée de la paralysie (projectile bleu)
 
 export interface Dino {
   /** Distance parcourue dans le monde (pixels). */
@@ -29,15 +32,17 @@ export interface Dino {
   facingLeft: boolean;
   /** Temps restant de ralentissement (en ms, 0 = vitesse normale). */
   slowTimer: number;
+  /** Temps restant de paralysie (en ms, 0 = libre). Gelé : n'avance plus, ne bouge plus, ne saute plus. */
+  frozenTimer: number;
 }
 
 export function createDino(): Dino {
-  return { x: 0, offsetX: 0, height: 0, vy: 0, onGround: true, facingLeft: false, slowTimer: 0 };
+  return { x: 0, offsetX: 0, height: 0, vy: 0, onGround: true, facingLeft: false, slowTimer: 0, frozenTimer: 0 };
 }
 
 /** Saute, seulement si le dino touche le sol. Renvoie true si le saut a eu lieu. */
 export function jump(d: Dino): boolean {
-  if (!d.onGround) return false;
+  if (!d.onGround || d.frozenTimer > 0) return false;
   d.vy = JUMP_SPEED;
   d.onGround = false;
   return true;
@@ -45,7 +50,7 @@ export function jump(d: Dino): boolean {
 
 /** Déplace le dino de gauche (-1) à droite (1) sur l'écran. */
 export function moveHorizontal(d: Dino, dir: -1 | 0 | 1, dt: number): void {
-  if (dir === 0) return; // sans bouton, le dino garde la direction où il regardait
+  if (dir === 0 || d.frozenTimer > 0) return; // sans bouton (ou gelé), le dino garde la direction où il regardait
   d.facingLeft = dir === -1;
   d.offsetX += dir * MOVE_SPEED * dt;
   d.offsetX = Math.max(MAX_OFFSET_LEFT, Math.min(MAX_OFFSET_RIGHT, d.offsetX));
@@ -56,12 +61,28 @@ export function slowDown(d: Dino): void {
   d.slowTimer = SLOW_DURATION_MS;
 }
 
+/** Projectile bleu : le dino est paralysé quelques secondes. */
+export function freeze(d: Dino): void {
+  d.frozenTimer = FREEZE_DURATION_MS;
+}
+
+/** Boule de neige : le dino est projeté en l'air, même s'il ne touchait pas le sol. */
+export function forceJump(d: Dino): void {
+  d.vy = JUMP_SPEED;
+  d.onGround = false;
+}
+
+/** Vitesse actuelle vers la droite (pixels par ms) : 0 si gelé, réduite après un choc. */
+export function currentSpeed(d: Dino): number {
+  if (d.frozenTimer > 0) return 0;
+  return d.slowTimer > 0 ? RUN_SPEED * SLOW_FACTOR : RUN_SPEED;
+}
+
 /** Fait avancer le dino de `dt` millisecondes. */
 export function stepDino(d: Dino, dt: number): void {
-  if (d.slowTimer > 0) {
-    d.slowTimer = Math.max(0, d.slowTimer - dt);
-  }
-  const speed = d.slowTimer > 0 ? RUN_SPEED * SLOW_FACTOR : RUN_SPEED;
+  const speed = currentSpeed(d); // vitesse au début de l'image
+  if (d.slowTimer > 0) d.slowTimer = Math.max(0, d.slowTimer - dt);
+  if (d.frozenTimer > 0) d.frozenTimer = Math.max(0, d.frozenTimer - dt);
   d.x += speed * dt;
 
   if (!d.onGround) {

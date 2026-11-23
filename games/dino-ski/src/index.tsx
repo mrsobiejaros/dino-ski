@@ -13,6 +13,12 @@
  * Un joueur en pause a son dino figé (sa distance ne bouge plus), et il
  * prévient les autres pour que son dino soit figé chez eux aussi.
  *
+ * Pièges (traps.ts, à deux seulement) : toutes les 15 s, chacun reçoit un piège
+ * au hasard (dans le cercle en haut à droite de sa moitié) et le lance avec B.
+ * Le projectile est envoyé à l'autre joueur : c'est SON appareil qui le fait
+ * avancer et qui décide s'il touche (gel / saut) ou s'il est esquivé.
+ * Chez le lanceur, une copie avance dans la moitié de l'autre, juste pour l'affichage.
+ *
  * Fin de partie (match.ts) : premier à 600 M, ou le plus loin après 2.5 minutes.
  * En salle, c'est l'hôte qui décide de la fin et l'envoie à tout le monde :
  * ainsi les deux joueurs voient exactement le même écran de fin.
@@ -41,9 +47,32 @@ const DINO_SKINS = [dinoRouge, dinoBleu]; // index 0 = moitié du haut (ou solo)
 import tasNeigeUrl from './assets/obstacles/Tas_neige.png';
 import snowmanUrl from './assets/obstacles/Snowman.png';
 const OBSTACLE_SKINS = [tasNeigeUrl, snowmanUrl];
-import { createDino, DINO_HEIGHT, DINO_WIDTH, jump, moveHorizontal, slowDown, stepDino, type Dino } from './dino.ts';
+import {
+  createDino,
+  DINO_HEIGHT,
+  DINO_WIDTH,
+  forceJump,
+  freeze,
+  jump,
+  moveHorizontal,
+  slowDown,
+  stepDino,
+  type Dino,
+} from './dino.ts';
 import { applyRemoteState, createRemote, remoteJump, stepRemote, type RemoteDino } from './remote.ts';
 import { checkObstacles, generateObstacles, type Obstacle } from './obstacles.ts';
+import {
+  PROJECTILE_FLY,
+  PROJECTILE_SIZE,
+  randomTrap,
+  spawnProjectile,
+  stepProjectiles,
+  TRAP_EVERY_MS,
+  TRAP_KINDS,
+  TRAP_SPIN_MS,
+  type Projectile,
+  type TrapKind,
+} from './traps.ts';
 import {
   checkEnd,
   formatClock,
@@ -113,12 +142,16 @@ type DinoMsg =
       vy: number;
       onGround: boolean;
       facingLeft: boolean;
+      slowTimer: number;
+      frozenTimer: number; // pour voir l'autre dino gelé chez soi
+      trap: TrapKind | null; // le piège dans son cercle (null = vide)
       dir: -1 | 0 | 1; // direction gauche/droite appuyée, pour prévoir le mouvement entre deux messages
       paused: boolean;
       thrown: number;
       dodged: number;
     }
   | { type: 'pause'; paused: boolean } // envoyé dès qu'on met en pause ou qu'on reprend
+  | { type: 'throw'; kind: TrapKind } // je lance un piège sur l'autre joueur
   | { type: 'end'; result: MatchResult }; // envoyé par l'hôte : la partie est finie
 
 /* ---------- Textes, en français et en anglais ---------- */
@@ -126,6 +159,7 @@ const TEXTS = defineTexts({
   fr: {
     distance: (m: number) => `${m}/${WIN_DISTANCE} M`,
     hint: 'A : SAUTER',
+    throwHint: 'B : LANCER',
     you: 'TOI',
     paused: 'EN PAUSE',
     endTitle: 'FIN DE PARTIE',
@@ -142,6 +176,7 @@ const TEXTS = defineTexts({
   en: {
     distance: (m: number) => `${m}/${WIN_DISTANCE} M`,
     hint: 'A: JUMP',
+    throwHint: 'B: THROW',
     you: 'YOU',
     paused: 'PAUSED',
     endTitle: 'GAME OVER',
@@ -157,7 +192,7 @@ const TEXTS = defineTexts({
   },
 });
 
-/** Pièges jetés et esquivés par un joueur (à incrémenter quand les pièges existeront). */
+/** Pièges jetés et esquivés par un joueur. */
 interface TrapStats {
   thrown: number;
   dodged: number;
@@ -175,6 +210,12 @@ interface Lane {
   paused: boolean;
   /** Numéro du skin dans DINO_SKINS (0 = rouge, 1 = bleu). */
   skin: number;
+  /** Projectiles qui foncent sur ce dino. */
+  projectiles: Projectile[];
+  /** Le piège dans le cercle (null = vide). */
+  trap: TrapKind | null;
+  /** Le cercle "tourne" encore (le piège vient d'arriver, pas encore lançable). */
+  spinning: boolean;
 }
 
 function DinoSki({ ctx }: GameProps<DinoMsg>) {
@@ -209,6 +250,13 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     finished: false, // gameOver déjà appelé ?
     myObstacles: generateObstacles(ctx.seed ?? 0),
     otherObstacles: new Map<string, Obstacle[]>(),
+    // Pièges
+    myTrap: null as TrapKind | null, // mon piège (dans le cercle), null = vide
+    trapIn: TRAP_EVERY_MS, // temps avant le prochain piège (ms)
+    trapSpin: 0, // > 0 : la roulette tourne encore (ms)
+    incoming: [] as Projectile[], // projectiles lancés sur MOI (c'est moi qui décide s'ils touchent)
+    outgoing: new Map<string, Projectile[]>(), // copies de mes projectiles chez l'autre (affichage)
+    otherTraps: new Map<string, TrapKind | null>(), // le piège dans le cercle de l'autre
   }).current;
 
   // La liste des joueurs, lue dans la boucle de jeu.
@@ -268,6 +316,25 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     },
   });
 
+  /* ----- Bouton B : lancer mon piège sur l'autre joueur (à deux seulement) ----- */
+  useButton(ctx, 'b', {
+    onPress: () => {
+      if (ctx.lifecycle.paused || state.result) return;
+      if (!state.myTrap || state.trapSpin > 0 || !ctx.multiplayer.room) return;
+      const kind = state.myTrap;
+      state.myTrap = null;
+      state.myStats.thrown++;
+      ctx.multiplayer.send({ type: 'throw', kind });
+      ctx.audio.play('throw');
+      // Copie pour l'affichage, dans la moitié de chaque autre joueur.
+      for (const [id, other] of state.others) {
+        const list = state.outgoing.get(id) ?? [];
+        list.push(spawnProjectile(kind, other.shown));
+        state.outgoing.set(id, list);
+      }
+    },
+  });
+
   /* ----- Messages des autres joueurs ----- */
   useMessages(ctx, (msg, from) => {
     if (msg.type === 'end') {
@@ -283,7 +350,12 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
       if (paused) state.pausedOthers.add(from.id);
       else state.pausedOthers.delete(from.id);
     };
-    if (msg.type === 'jump') {
+    if (msg.type === 'throw') {
+      // Un piège arrive sur moi : il apparaît à droite de mon écran.
+      if (state.result) return;
+      state.incoming.push(spawnProjectile(msg.kind, state.me));
+      ctx.audio.play('whoosh');
+    } else if (msg.type === 'jump') {
       remoteJump(other);
     } else if (msg.type === 'pause') {
       setPaused(msg.paused);
@@ -297,10 +369,12 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
           vy: msg.vy,
           onGround: msg.onGround,
           facingLeft: msg.facingLeft,
-          slowTimer: 0,
+          slowTimer: msg.slowTimer,
+          frozenTimer: msg.frozenTimer,
         },
         msg.dir,
       );
+      state.otherTraps.set(from.id, msg.trap);
       state.otherStats.set(from.id, { thrown: msg.thrown, dodged: msg.dodged });
       setPaused(msg.paused);
     }
@@ -321,6 +395,9 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
           isMe: true,
           skin: 0, // solo : le dino rouge
           paused: iAmPaused,
+          projectiles: [], // pas de pièges en solo
+          trap: null,
+          spinning: false,
         },
       ];
     }
@@ -356,6 +433,9 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
         isMe: p.isMe,
         paused: p.isMe ? iAmPaused : state.pausedOthers.has(p.id),
         skin: lanes.length, // 1re moitié (en haut) : rouge, 2e (en bas) : bleu
+        projectiles: p.isMe ? state.incoming : (state.outgoing.get(p.id) ?? []),
+        trap: p.isMe ? state.myTrap : (state.otherTraps.get(p.id) ?? null),
+        spinning: p.isMe && state.trapSpin > 0,
       });
     }
     return lanes;
@@ -368,6 +448,8 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     (dt) => {
       const iAmPaused = ctx.lifecycle.paused;
       const inRoom = ctx.multiplayer.room !== null;
+      // Les pièges n'existent qu'à deux (jamais en solo).
+      const withTraps = inRoom && playersRef.current.length >= 2;
 
       if (!state.result) {
         /* 1. Mise à jour : mon dino (sauf en pause), puis ceux des autres (sauf s'ils sont en pause). */
@@ -386,6 +468,38 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
           if (dodged > 0) {
             state.myStats.dodged += dodged;
           }
+
+          if (withTraps) {
+            // Un nouveau piège toutes les 15 s (seulement si le cercle est vide).
+            state.trapIn -= dt;
+            if (state.trapIn <= 0) {
+              state.trapIn += TRAP_EVERY_MS;
+              if (!state.myTrap) {
+                state.myTrap = randomTrap();
+                state.trapSpin = TRAP_SPIN_MS;
+                ctx.audio.play('select');
+              }
+            }
+            if (state.trapSpin > 0) {
+              state.trapSpin -= dt;
+              if (state.trapSpin <= 0) ctx.audio.play('coin'); // la roulette s'arrête : prêt à lancer
+            }
+
+            // Les projectiles lancés sur moi : touché ou esquivé ?
+            const trapRes = stepProjectiles(state.incoming, state.me, dt);
+            for (const kind of trapRes.hits) {
+              if (kind === 'freeze') {
+                freeze(state.me);
+              } else {
+                forceJump(state.me);
+                if (inRoom) ctx.multiplayer.send({ type: 'jump' });
+              }
+              state.sendIn = 0; // on prévient l'autre tout de suite
+              ctx.audio.play('splat');
+              ctx.audio.vibrate(150);
+            }
+            state.myStats.dodged += trapRes.dodged;
+          }
         } else {
           state.myDir = 0;
         }
@@ -394,6 +508,9 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
             stepRemote(other, dt);
             const obs = state.otherObstacles.get(id);
             if (obs) checkObstacles(other.shown, obs);
+            // Copies de mes projectiles : pour l'affichage seulement (l'effet arrive par ses messages).
+            const mine = state.outgoing.get(id);
+            if (mine) stepProjectiles(mine, other.shown, dt);
           }
         }
 
@@ -413,6 +530,9 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
             vy: d.vy,
             onGround: d.onGround,
             facingLeft: d.facingLeft,
+            slowTimer: d.slowTimer,
+            frozenTimer: d.frozenTimer,
+            trap: state.trapSpin > 0 ? null : state.myTrap,
             dir: state.myDir,
             paused: iAmPaused,
             thrown: state.myStats.thrown,
@@ -537,6 +657,60 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     g.rotate(tilt);
     g.drawImage(dinoImg, -DINO_WIDTH / 2, -DINO_HEIGHT / 2, DINO_WIDTH, DINO_HEIGHT);
     g.restore();
+
+    // Gelé par un projectile bleu : un bloc de glace par-dessus.
+    if (dino.frozenTimer > 0) {
+      g.fillStyle = 'rgba(140, 210, 255, 0.45)';
+      g.fillRect(dx - 2, dy - 2, DINO_WIDTH + 4, DINO_HEIGHT + 4);
+      g.strokeStyle = PALETTE.ice;
+      g.lineWidth = 1;
+      g.strokeRect(dx - 1.5, dy - 1.5, DINO_WIDTH + 3, DINO_HEIGHT + 3);
+      g.fillStyle = PALETTE.snow; // reflets
+      g.fillRect(dx + 2, dy, 4, 1);
+      g.fillRect(dx, dy + 2, 1, 4);
+    }
+  }
+
+  /** Dessine un projectile (rond de PROJECTILE_SIZE pixels), avec une petite traînée. */
+  function drawProjectile(g: CanvasRenderingContext2D, kind: TrapKind, cx: number, cy: number, trail: boolean) {
+    const r = PROJECTILE_SIZE / 2;
+    const main = kind === 'freeze' ? '#2f8cff' : PALETTE.snow;
+    const light = kind === 'freeze' ? '#bfe3ff' : '#ffffff';
+    const shade = kind === 'freeze' ? '#1b4fb3' : '#9fb4c8';
+    if (trail) {
+      g.fillStyle = kind === 'freeze' ? 'rgba(120, 190, 255, 0.5)' : 'rgba(255, 255, 255, 0.5)';
+      g.fillRect(Math.round(cx + r), Math.round(cy - 1), 4, 2);
+      g.fillRect(Math.round(cx + r + 5), Math.round(cy), 2, 1);
+    }
+    g.fillStyle = shade;
+    g.beginPath();
+    g.arc(cx, cy, r, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = main;
+    g.beginPath();
+    g.arc(cx - 0.5, cy - 0.5, r - 1, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = light; // reflet
+    g.fillRect(Math.round(cx - 2), Math.round(cy - 2), 2, 2);
+  }
+
+  /** Le cercle "à la Mario Kart" en haut à droite : vide, en roulette, ou avec le piège. */
+  function drawTrapBox(g: CanvasRenderingContext2D, lane: Lane, cx: number, cy: number) {
+    const r = 9;
+    g.fillStyle = 'rgba(11, 30, 63, 0.75)';
+    g.beginPath();
+    g.arc(cx, cy, r, 0, Math.PI * 2);
+    g.fill();
+    g.strokeStyle = PALETTE.gold;
+    g.lineWidth = 2;
+    g.stroke();
+    if (lane.spinning) {
+      // La roulette : les pièges défilent très vite.
+      const kind = TRAP_KINDS[Math.floor(state.trapSpin / 90) % TRAP_KINDS.length];
+      drawProjectile(g, kind, cx, cy, false);
+    } else if (lane.trap) {
+      drawProjectile(g, lane.trap, cx, cy, false);
+    }
   }
 
   /** Dessine une moitié d'écran (fond, dino, textes). */
@@ -575,13 +749,31 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
       }
     }
 
+    // Les projectiles qui foncent sur ce dino
+    for (const p of lane.projectiles) {
+      const px = p.x - camX;
+      if (px + PROJECTILE_SIZE < 0 || px > width) continue;
+      const r = PROJECTILE_SIZE / 2;
+      drawProjectile(g, p.kind, Math.round(px + r), groundY - PROJECTILE_FLY - r, true);
+    }
+
     // Le dino
     drawDino(g, lane.dino, dinoImgs[lane.skin], Math.round(DINO_SCREEN_X + lane.dino.offsetX), groundY);
 
     // Textes : nom du joueur (à sa couleur), distance, aide
     drawText(g, lane.name, 6, top + 6, { color: lane.color });
     drawText(g, t.distance(toMeters(lane.dino.x + lane.dino.offsetX)), 6, top + 18);
-    if (lane.isMe) drawText(g, t.hint, width - 6, top + 6, { color: PALETTE.gold, align: 'right' });
+    // À deux : le cercle du piège en haut à droite, et l'aide juste en dessous
+    // (à côté du cercle, elle cacherait le chrono : la police fait 8 px par lettre).
+    const withTraps = ctx.multiplayer.room !== null && playersRef.current.length >= 2;
+    const hintY = withTraps ? top + 28 : top + 6;
+    if (withTraps) drawTrapBox(g, lane, width - 16, top + 15);
+    if (lane.isMe) {
+      drawText(g, t.hint, width - 6, hintY, { color: PALETTE.gold, align: 'right' });
+      if (lane.trap && !lane.spinning) {
+        drawText(g, t.throwHint, width - 6, hintY + 10, { color: PALETTE.ice, align: 'right' });
+      }
+    }
 
     // Joueur en pause : on assombrit sa moitié et on l'écrit au milieu.
     if (lane.paused && !state.result) {
@@ -622,8 +814,13 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
       const color = lane?.color ?? PALETTE.snow;
       drawText(g, name, 14, y, { color });
       drawText(g, t.meters(racer.distance), width - 14, y, { color: PALETTE.snow, align: 'right' });
-      drawText(g, t.thrown(racer.thrown), 22, y + 12, { color: PALETTE.ice });
-      drawText(g, t.dodged(racer.dodged), 22, y + 22, { color: PALETTE.ice });
+      if (result.racers.length > 1) {
+        // À deux : pièges jetés + esquivés. En solo, on ne peut rien jeter : on n'affiche que les esquives.
+        drawText(g, t.thrown(racer.thrown), 22, y + 12, { color: PALETTE.ice });
+        drawText(g, t.dodged(racer.dodged), 22, y + 22, { color: PALETTE.ice });
+      } else {
+        drawText(g, t.dodged(racer.dodged), 22, y + 12, { color: PALETTE.ice });
+      }
       y += 44;
     }
 
@@ -717,7 +914,15 @@ export default defineGame<DinoMsg>({
   component: DinoSki,
   scoreOrder: 'desc',
   howToPlay: {
-    fr: ['Le dino avance seul. A : sauter.', `Le premier à ${WIN_DISTANCE} M gagne !`, 'Après 2:30, le plus loin gagne.'],
-    en: ['The dino moves alone. A: jump.', `First to ${WIN_DISTANCE} M wins!`, 'After 2:30, the furthest wins.'],
+    fr: [
+      `A : sauter. Premier à ${WIN_DISTANCE} M, ou le plus loin après 2:30.`,
+      'À deux : un piège toutes les 15 s, B pour le lancer.',
+      'Bleu : paralyse. Boule de neige : fait sauter.',
+    ],
+    en: [
+      `A: jump. First to ${WIN_DISTANCE} M, or furthest after 2:30.`,
+      'With two: a trap every 15 s, B to throw it.',
+      'Blue: freezes. Snowball: makes you jump.',
+    ],
   },
 });
