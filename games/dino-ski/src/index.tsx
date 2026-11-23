@@ -36,8 +36,14 @@ import {
 import dinoRouge from './assets/dino-rouge.png';
 import dinoBleu from './assets/dino-bleu.png';
 const DINO_SKINS = [dinoRouge, dinoBleu]; // index 0 = moitié du haut (ou solo), 1 = moitié du bas
-import { createDino, DINO_HEIGHT, DINO_WIDTH, jump, moveHorizontal, stepDino, type Dino } from './dino.ts';
+
+// Les sprites des obstacles (0 = tas de neige, 1 = bonhomme de neige)
+import tasNeigeUrl from './assets/obstacles/Tas_neige.png';
+import snowmanUrl from './assets/obstacles/Snowman.png';
+const OBSTACLE_SKINS = [tasNeigeUrl, snowmanUrl];
+import { createDino, DINO_HEIGHT, DINO_WIDTH, jump, moveHorizontal, slowDown, stepDino, type Dino } from './dino.ts';
 import { applyRemoteState, createRemote, remoteJump, stepRemote, type RemoteDino } from './remote.ts';
+import { checkObstacles, generateObstacles, type Obstacle } from './obstacles.ts';
 import {
   checkEnd,
   formatClock,
@@ -96,7 +102,6 @@ const DINO_SCREEN_X = 48; // position horizontale du dino dans sa moitié d'écr
 const SEND_EVERY_MS = 80; // envoi de mon état environ 12 fois par seconde
 const SOLO_ID = 'solo'; // identifiant du joueur quand on joue seul
 
-/* ---------- Messages échangés entre les joueurs ---------- */
 /* ---------- Messages échangés entre les joueurs ---------- */
 type DinoMsg =
   | { type: 'jump' } // envoyé tout de suite, pour que le saut se voie sans attendre
@@ -162,6 +167,7 @@ interface TrapStats {
 interface Lane {
   id: string;
   dino: Dino;
+  obstacles: Obstacle[];
   stats: TrapStats;
   name: string;
   color: string;
@@ -178,6 +184,7 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
   const players = useRoomPlayers(ctx);
 
   const dinoImgs = useMemo(() => DINO_SKINS.map(loadImage), []);
+  const obstacleImgs = useMemo(() => OBSTACLE_SKINS.map(loadImage), []);
   const backgroundLayers = useMemo(
     () =>
       BACKGROUND_LAYERS.map((layer) => ({
@@ -200,6 +207,8 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     elapsed: 0, // durée de la partie (ms)
     result: null as MatchResult | null, // rempli quand la partie est finie
     finished: false, // gameOver déjà appelé ?
+    myObstacles: generateObstacles(ctx.seed ?? 0),
+    otherObstacles: new Map<string, Obstacle[]>(),
   }).current;
 
   // La liste des joueurs, lue dans la boucle de jeu.
@@ -288,6 +297,7 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
           vy: msg.vy,
           onGround: msg.onGround,
           facingLeft: msg.facingLeft,
+          slowTimer: 0,
         },
         msg.dir,
       );
@@ -304,6 +314,7 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
         {
           id: SOLO_ID,
           dino: state.me,
+          obstacles: state.myObstacles,
           stats: state.myStats,
           name: t.you,
           color: PLAYER_COLORS[0],
@@ -316,8 +327,10 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     const lanes: Lane[] = [];
     for (const p of [...room].sort((a, b) => a.slot - b.slot).slice(0, 2)) {
       let dino: Dino;
+      let obstacles: Obstacle[];
       if (p.isMe) {
         dino = state.me;
+        obstacles = state.myObstacles;
       } else {
         let other = state.others.get(p.id);
         if (!other) {
@@ -326,10 +339,17 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
           state.others.set(p.id, other);
         }
         dino = other.shown; // on dessine la version lissée
+        let obs = state.otherObstacles.get(p.id);
+        if (!obs) {
+          obs = generateObstacles(ctx.seed ?? 0);
+          state.otherObstacles.set(p.id, obs);
+        }
+        obstacles = obs;
       }
       lanes.push({
         id: p.id,
         dino,
+        obstacles,
         stats: p.isMe ? state.myStats : (state.otherStats.get(p.id) ?? { thrown: 0, dodged: 0 }),
         name: p.isMe ? t.you : p.nickname.toUpperCase(),
         color: PLAYER_COLORS[p.slot],
@@ -349,18 +369,32 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
       const iAmPaused = ctx.lifecycle.paused;
       const inRoom = ctx.multiplayer.room !== null;
 
-if (!state.result) {
+      if (!state.result) {
         /* 1. Mise à jour : mon dino (sauf en pause), puis ceux des autres (sauf s'ils sont en pause). */
         if (!iAmPaused) {
           stepDino(state.me, dt);
           const dir = (ctx.input.isDown('right') ? 1 : 0) - (ctx.input.isDown('left') ? 1 : 0);
           state.myDir = dir as -1 | 0 | 1;
           moveHorizontal(state.me, state.myDir, dt);
+
+          const { hits, dodged } = checkObstacles(state.me, state.myObstacles);
+          if (hits > 0) {
+            slowDown(state.me);
+            ctx.audio.play('hit');
+            ctx.audio.vibrate(100);
+          }
+          if (dodged > 0) {
+            state.myStats.dodged += dodged;
+          }
         } else {
           state.myDir = 0;
         }
         for (const [id, other] of state.others) {
-          if (!state.pausedOthers.has(id)) stepRemote(other, dt);
+          if (!state.pausedOthers.has(id)) {
+            stepRemote(other, dt);
+            const obs = state.otherObstacles.get(id);
+            if (obs) checkObstacles(other.shown, obs);
+          }
         }
 
         // Le chrono : en solo il s'arrête pendant la pause, en salle il continue.
@@ -392,7 +426,7 @@ if (!state.result) {
       /* 3. Fin de partie ? En salle, seul l'hôte décide (puis prévient les autres). */
       const amHost = !inRoom || playersRef.current.find((p) => p.isMe)?.isHost === true;
       if (!state.result && amHost) {
-         const racers: Racer[] = lanes.map((l) => ({
+        const racers: Racer[] = lanes.map((l) => ({
           id: l.id,
           distance: toMeters(l.dino.x + l.dino.offsetX),
           thrown: l.stats.thrown,
@@ -467,6 +501,9 @@ if (!state.result) {
    * L'animation suit la distance parcourue (`dino.x`) : elle s'arrête en pause.
    */
   function drawDino(g: CanvasRenderingContext2D, dino: Dino, dinoImg: HTMLImageElement, dx: number, groundY: number) {
+    // Clignotement pendant le ralentissement après un choc
+    if ((dino.slowTimer ?? 0) > 0 && Math.floor((dino.slowTimer ?? 0) / 80) % 2 === 0) return;
+
     const bob = dino.onGround && Math.floor(dino.x / 10) % 2 === 0 ? -1 : 0; // tressautement
     const dy = Math.round(groundY - DINO_HEIGHT - dino.height) + bob;
     const back = dino.facingLeft ? 1 : -1; // côté arrière de la luge (+1 = à droite)
@@ -523,10 +560,25 @@ if (!state.result) {
       else drawLayer(g, layer.img, camX * layer.speed, top, h, layer.smooth);
     }
 
+    // Les obstacles sur la piste
+    // Les obstacles sur la piste
+    for (const obs of lane.obstacles) {
+      const ox = Math.round(obs.x - camX);
+      if (ox + obs.width < 0 || ox > width) continue;
+      const oy = Math.round(groundY - obs.height);
+      const img = obstacleImgs[obs.kind];
+      if (img && img.complete && img.naturalWidth > 0) {
+        g.drawImage(img, ox, oy, obs.width, obs.height);
+      } else {
+        g.fillStyle = obs.resolved ? PALETTE.wood : PALETTE.red;
+        g.fillRect(ox, oy, obs.width, obs.height);
+      }
+    }
+
     // Le dino
     drawDino(g, lane.dino, dinoImgs[lane.skin], Math.round(DINO_SCREEN_X + lane.dino.offsetX), groundY);
+
     // Textes : nom du joueur (à sa couleur), distance, aide
-// Textes : nom du joueur (à sa couleur), distance, aide
     drawText(g, lane.name, 6, top + 6, { color: lane.color });
     drawText(g, t.distance(toMeters(lane.dino.x + lane.dino.offsetX)), 6, top + 18);
     if (lane.isMe) drawText(g, t.hint, width - 6, top + 6, { color: PALETTE.gold, align: 'right' });

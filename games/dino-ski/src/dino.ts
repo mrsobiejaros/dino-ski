@@ -12,6 +12,8 @@ export const MAX_OFFSET_LEFT = -36; // limite gauche (48 - 36 = 12 px du bord ga
 export const MAX_OFFSET_RIGHT = 140; // limite droite (48 + 140 + 24 = 212 px sur 240)
 export const JUMP_SPEED = 0.34; // vitesse verticale au moment du saut
 export const GRAVITY = 0.001; // ce qui ramène le dino au sol
+export const SLOW_DURATION_MS = 1500; // durée du ralentissement après un choc (ms)
+export const SLOW_FACTOR = 0.45; // vitesse réduite à 45 % pendant le choc
 
 export interface Dino {
   /** Distance parcourue dans le monde (pixels). */
@@ -25,10 +27,12 @@ export interface Dino {
   onGround: boolean;
   /** true quand le dino regarde vers la gauche (il recule) : l'image est retournée. */
   facingLeft: boolean;
+  /** Temps restant de ralentissement (en ms, 0 = vitesse normale). */
+  slowTimer: number;
 }
 
 export function createDino(): Dino {
-  return { x: 0, offsetX: 0, height: 0, vy: 0, onGround: true, facingLeft: false };
+  return { x: 0, offsetX: 0, height: 0, vy: 0, onGround: true, facingLeft: false, slowTimer: 0 };
 }
 
 /** Saute, seulement si le dino touche le sol. Renvoie true si le saut a eu lieu. */
@@ -47,9 +51,19 @@ export function moveHorizontal(d: Dino, dir: -1 | 0 | 1, dt: number): void {
   d.offsetX = Math.max(MAX_OFFSET_LEFT, Math.min(MAX_OFFSET_RIGHT, d.offsetX));
 }
 
+/** Applique un ralentissement suite à un obstacle touché. */
+export function slowDown(d: Dino): void {
+  d.slowTimer = SLOW_DURATION_MS;
+}
+
 /** Fait avancer le dino de `dt` millisecondes. */
 export function stepDino(d: Dino, dt: number): void {
-  d.x += RUN_SPEED * dt;
+  if (d.slowTimer > 0) {
+    d.slowTimer = Math.max(0, d.slowTimer - dt);
+  }
+  const speed = d.slowTimer > 0 ? RUN_SPEED * SLOW_FACTOR : RUN_SPEED;
+  d.x += speed * dt;
+
   if (!d.onGround) {
     d.vy -= GRAVITY * dt;
     d.height += d.vy * dt;
