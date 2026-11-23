@@ -32,8 +32,12 @@ import {
   useRoomPlayers,
   type GameProps,
 } from '@gamebovh/sdk';
-import dinoUrl from './assets/dino.png'; // exporté depuis "Dino 1.aseprite" (32 x 24)
+// Les skins du dino (32 x 24). En solo : le rouge. À deux : rouge en haut, bleu en bas.
+import dinoRouge from './assets/dino-rouge.png';
+import dinoBleu from './assets/dino-bleu.png';
+const DINO_SKINS = [dinoRouge, dinoBleu]; // index 0 = moitié du haut (ou solo), 1 = moitié du bas
 import { createDino, DINO_HEIGHT, DINO_WIDTH, jump, moveHorizontal, stepDino, type Dino } from './dino.ts';
+import { applyRemoteState, createRemote, remoteJump, stepRemote, type RemoteDino } from './remote.ts';
 import {
   checkEnd,
   formatClock,
@@ -68,7 +72,8 @@ import ligne from './assets/fond/9-ligne.png';
 const BACKGROUND_LAYERS = [
   { url: ciel, speed: 0 },
   { url: lune, speed: 0, moon: true },
-  { url: montagne, speed: 0.1 },
+  // `smooth: true` : calque très lent, déplacé au sous-pixel pour éviter les à-coups (voir drawSubPixel).
+  { url: montagne, speed: 0.1, smooth: true },
   { url: nuages, speed: 0.2 },
   { url: sapinsLoin, speed: 0.4 },
   { url: sapinsProches, speed: 0.6 },
@@ -103,6 +108,7 @@ type DinoMsg =
       vy: number;
       onGround: boolean;
       facingLeft: boolean;
+      dir: -1 | 0 | 1; // direction gauche/droite appuyée, pour prévoir le mouvement entre deux messages
       paused: boolean;
       thrown: number;
       dodged: number;
@@ -161,6 +167,8 @@ interface Lane {
   color: string;
   isMe: boolean;
   paused: boolean;
+  /** Numéro du skin dans DINO_SKINS (0 = rouge, 1 = bleu). */
+  skin: number;
 }
 
 function DinoSki({ ctx }: GameProps<DinoMsg>) {
@@ -169,13 +177,14 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
   const t = TEXTS[ctx.lang];
   const players = useRoomPlayers(ctx);
 
-  const dinoImg = useMemo(() => loadImage(dinoUrl), []);
+  const dinoImgs = useMemo(() => DINO_SKINS.map(loadImage), []);
   const backgroundLayers = useMemo(
     () =>
       BACKGROUND_LAYERS.map((layer) => ({
         img: loadImage(layer.url),
         speed: layer.speed,
         moon: layer.moon === true,
+        smooth: layer.smooth === true,
       })),
     [],
   );
@@ -183,7 +192,8 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
   const state = useRef({
     me: createDino(),
     myStats: { thrown: 0, dodged: 0 } as TrapStats,
-    others: new Map<string, Dino>(), // dinos des autres joueurs, par identifiant
+    myDir: 0 as -1 | 0 | 1, // direction gauche/droite que j'appuie
+    others: new Map<string, RemoteDino>(), // dinos des autres joueurs, par identifiant (voir remote.ts)
     otherStats: new Map<string, TrapStats>(),
     pausedOthers: new Set<string>(), // identifiants des autres joueurs en pause
     sendIn: 0,
@@ -257,24 +267,30 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     }
     let other = state.others.get(from.id);
     if (!other) {
-      other = createDino();
+      other = createRemote();
       state.others.set(from.id, other);
     }
     const setPaused = (paused: boolean) => {
       if (paused) state.pausedOthers.add(from.id);
       else state.pausedOthers.delete(from.id);
     };
-if (msg.type === 'jump') {
-      jump(other);
+    if (msg.type === 'jump') {
+      remoteJump(other);
     } else if (msg.type === 'pause') {
       setPaused(msg.paused);
     } else if (msg.type === 'state') {
-      other.x = msg.x;
-      other.offsetX = msg.offsetX;
-      other.height = msg.height;
-      other.vy = msg.vy;
-      other.onGround = msg.onGround;
-      other.facingLeft = msg.facingLeft;
+      applyRemoteState(
+        other,
+        {
+          x: msg.x,
+          offsetX: msg.offsetX,
+          height: msg.height,
+          vy: msg.vy,
+          onGround: msg.onGround,
+          facingLeft: msg.facingLeft,
+        },
+        msg.dir,
+      );
       state.otherStats.set(from.id, { thrown: msg.thrown, dodged: msg.dodged });
       setPaused(msg.paused);
     }
@@ -292,17 +308,24 @@ if (msg.type === 'jump') {
           name: t.you,
           color: PLAYER_COLORS[0],
           isMe: true,
+          skin: 0, // solo : le dino rouge
           paused: iAmPaused,
         },
       ];
     }
     const lanes: Lane[] = [];
     for (const p of [...room].sort((a, b) => a.slot - b.slot).slice(0, 2)) {
-      let dino = p.isMe ? state.me : state.others.get(p.id);
-      if (!dino) {
-        // Pas encore de message reçu : l'autre dino part de zéro, comme nous.
-        dino = createDino();
-        state.others.set(p.id, dino);
+      let dino: Dino;
+      if (p.isMe) {
+        dino = state.me;
+      } else {
+        let other = state.others.get(p.id);
+        if (!other) {
+          // Pas encore de message reçu : l'autre dino part de zéro, comme nous.
+          other = createRemote();
+          state.others.set(p.id, other);
+        }
+        dino = other.shown; // on dessine la version lissée
       }
       lanes.push({
         id: p.id,
@@ -312,6 +335,7 @@ if (msg.type === 'jump') {
         color: PLAYER_COLORS[p.slot],
         isMe: p.isMe,
         paused: p.isMe ? iAmPaused : state.pausedOthers.has(p.id),
+        skin: lanes.length, // 1re moitié (en haut) : rouge, 2e (en bas) : bleu
       });
     }
     return lanes;
@@ -330,10 +354,13 @@ if (!state.result) {
         if (!iAmPaused) {
           stepDino(state.me, dt);
           const dir = (ctx.input.isDown('right') ? 1 : 0) - (ctx.input.isDown('left') ? 1 : 0);
-          moveHorizontal(state.me, dir as -1 | 0 | 1, dt);
+          state.myDir = dir as -1 | 0 | 1;
+          moveHorizontal(state.me, state.myDir, dt);
+        } else {
+          state.myDir = 0;
         }
         for (const [id, other] of state.others) {
-          if (!state.pausedOthers.has(id)) stepDino(other, dt);
+          if (!state.pausedOthers.has(id)) stepRemote(other, dt);
         }
 
         // Le chrono : en solo il s'arrête pendant la pause, en salle il continue.
@@ -352,6 +379,7 @@ if (!state.result) {
             vy: d.vy,
             onGround: d.onGround,
             facingLeft: d.facingLeft,
+            dir: state.myDir,
             paused: iAmPaused,
             thrown: state.myStats.thrown,
             dodged: state.myStats.dodged,
@@ -419,15 +447,16 @@ if (!state.result) {
    * et arrive à gauche (progress = 1). Elle garde sa hauteur dans l'image.
    */
   function drawMoon(g: CanvasRenderingContext2D, img: HTMLImageElement, progress: number, top: number, h: number) {
-    if (!img.complete || img.naturalWidth === 0) return;
-    const scale = h / img.naturalHeight; // l'image est mise à la hauteur de la zone de jeu
+    const scaled = scaledImage(img, h); // l'image mise à la hauteur de la zone de jeu, pixels nets
+    if (!scaled) return;
+    const scale = h / img.naturalHeight;
     const moonW = (MOON_RIGHT - MOON_LEFT) * scale;
     const margin = MOON_MARGIN * scale;
     const startX = width - margin - moonW; // tout à droite
     const endX = margin; // tout à gauche
     const moonX = startX + (endX - startX) * progress;
-    // On décale toute l'image pour que la lune tombe à moonX.
-    g.drawImage(img, Math.round(moonX - MOON_LEFT * scale), top, img.naturalWidth * scale, h);
+    // On décale toute l'image pour que la lune tombe à moonX (au sous-pixel : pas d'à-coups).
+    drawSubPixel(g, true, () => g.drawImage(scaled, moonX - MOON_LEFT * scale, top));
   }
 
   /**
@@ -437,7 +466,7 @@ if (!state.result) {
    *   - en l'air : le dino se penche (nez en haut en montant, en bas en descendant).
    * L'animation suit la distance parcourue (`dino.x`) : elle s'arrête en pause.
    */
-  function drawDino(g: CanvasRenderingContext2D, dino: Dino, dx: number, groundY: number) {
+  function drawDino(g: CanvasRenderingContext2D, dino: Dino, dinoImg: HTMLImageElement, dx: number, groundY: number) {
     const bob = dino.onGround && Math.floor(dino.x / 10) % 2 === 0 ? -1 : 0; // tressautement
     const dy = Math.round(groundY - DINO_HEIGHT - dino.height) + bob;
     const back = dino.facingLeft ? 1 : -1; // côté arrière de la luge (+1 = à droite)
@@ -491,11 +520,11 @@ if (!state.result) {
     const progress = laneProgress(lane);
     for (const layer of backgroundLayers) {
       if (layer.moon) drawMoon(g, layer.img, progress, top, h);
-      else drawLayer(g, layer.img, camX * layer.speed, top, h);
+      else drawLayer(g, layer.img, camX * layer.speed, top, h, layer.smooth);
     }
 
     // Le dino
-    drawDino(g, lane.dino, Math.round(DINO_SCREEN_X + lane.dino.offsetX), groundY);
+    drawDino(g, lane.dino, dinoImgs[lane.skin], Math.round(DINO_SCREEN_X + lane.dino.offsetX), groundY);
     // Textes : nom du joueur (à sa couleur), distance, aide
 // Textes : nom du joueur (à sa couleur), distance, aide
     drawText(g, lane.name, 6, top + 6, { color: lane.color });
@@ -556,15 +585,73 @@ if (!state.result) {
  * Dessine un calque du fond : l'image est mise à la hauteur `h`, répétée côte à côte
  * et décalée de `scrollX` pixels vers la gauche (c'est ce qui la fait défiler).
  */
-function drawLayer(g: CanvasRenderingContext2D, img: HTMLImageElement, scrollX: number, top: number, h: number) {
-  if (!img.complete || img.naturalWidth === 0) return;
+function drawLayer(
+  g: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  scrollX: number,
+  top: number,
+  h: number,
+  smooth = false,
+) {
+  const scaled = scaledImage(img, h);
+  if (!scaled) return;
   const screenW = g.canvas.width;
-  const tileW = Math.round((img.naturalWidth * h) / img.naturalHeight);
+  const tileW = scaled.width;
+  // Calque lissé : on garde les décimales (sous-pixel). Sinon : arrondi au pixel, net.
+  const scroll = smooth ? scrollX : Math.floor(scrollX);
   // (le "+ tileW) % tileW" garde le décalage positif, même quand scrollX < 0 au départ)
-  const offset = ((Math.floor(scrollX) % tileW) + tileW) % tileW;
-  for (let x = -offset; x < screenW; x += tileW) {
-    g.drawImage(img, x, top, tileW, h);
+  const offset = ((scroll % tileW) + tileW) % tileW;
+  drawSubPixel(g, smooth, () => {
+    for (let x = -offset; x < screenW; x += tileW) g.drawImage(scaled, x, top);
+  });
+}
+
+/**
+ * Dessine avec ou sans lissage.
+ *
+ * Pourquoi : l'écran ne fait que 240 pixels de large. Un calque très lent
+ * (montagne, lune) ne peut bouger que d'un pixel entier à la fois : on voit
+ * des à-coups. Avec le lissage, une position comme x = 10,4 mélange un peu
+ * les pixels voisins, et le mouvement paraît continu. On ne l'utilise que
+ * pour la montagne et la lune : sur les sapins, très détaillés, ça fait flou.
+ */
+function drawSubPixel(g: CanvasRenderingContext2D, smooth: boolean, draw: () => void) {
+  if (!smooth) {
+    draw();
+    return;
   }
+  g.save();
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'high';
+  draw();
+  g.restore();
+}
+
+/**
+ * L'image agrandie à la hauteur `h`, en gardant des pixels nets.
+ * Préparée une seule fois par taille, puis réutilisée : ensuite elle n'est
+ * plus que décalée, jamais réagrandie, donc le lissage ne la rend pas floue.
+ */
+const scaledCache = new WeakMap<HTMLImageElement, Map<number, HTMLCanvasElement>>();
+function scaledImage(img: HTMLImageElement, h: number): HTMLCanvasElement | null {
+  if (!img.complete || img.naturalWidth === 0) return null;
+  let bySize = scaledCache.get(img);
+  if (!bySize) {
+    bySize = new Map();
+    scaledCache.set(img, bySize);
+  }
+  let canvas = bySize.get(h);
+  if (!canvas) {
+    canvas = document.createElement('canvas'); // canvas hors écran, jamais ajouté à la page
+    canvas.width = Math.round((img.naturalWidth * h) / img.naturalHeight);
+    canvas.height = h;
+    const c = canvas.getContext('2d');
+    if (!c) return null;
+    c.imageSmoothingEnabled = false;
+    c.drawImage(img, 0, 0, canvas.width, canvas.height);
+    bySize.set(h, canvas);
+  }
+  return canvas;
 }
 
 /** Charge une image une fois ; on vérifie `complete` avant de la dessiner. */
