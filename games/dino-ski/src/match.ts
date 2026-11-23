@@ -1,12 +1,29 @@
 /**
  * Les règles de fin de partie (sans React ni dessin).
  *
- *   - le premier joueur qui atteint WIN_DISTANCE mètres gagne ;
- *   - si la partie dure MAX_DURATION_MS (2 min 30), le plus loin gagne.
+ *   - à deux : le premier qui atteint WIN_DISTANCE_MULTI (600 m) gagne ;
+ *   - en solo : pas d'objectif de distance, on va le plus loin possible avant la fin du temps ;
+ *   - quand le temps est écoulé (3:00 en solo, 2:30 à deux), le plus loin gagne.
  */
 
-export const WIN_DISTANCE = 600; // en mètres
-export const MAX_DURATION_MS = (2 * 60 + 30) * 1000; // 2 minutes 30
+export const WIN_DISTANCE_MULTI = 600; // objectif à deux (mètres)
+/**
+ * Longueur de la piste générée (mètres). En solo, il n'y a pas de ligne d'arrivée :
+ * sans aucun choc, on fait environ 5 400 m en 3 minutes (vitesse max x6,2 après 1500 m).
+ */
+export const TRACK_LENGTH_M = 6000;
+
+/** L'objectif de distance selon le mode de jeu (null = pas d'objectif, en solo). */
+export function winDistance(multi: boolean): number | null {
+  return multi ? WIN_DISTANCE_MULTI : null;
+}
+export const MAX_DURATION_SOLO_MS = 3 * 60 * 1000; // 3 minutes en solo
+export const MAX_DURATION_MULTI_MS = (2 * 60 + 30) * 1000; // 2 minutes 30 à deux
+
+/** Le temps maximum selon le mode de jeu. */
+export function maxDuration(multi: boolean): number {
+  return multi ? MAX_DURATION_MULTI_MS : MAX_DURATION_SOLO_MS;
+}
 
 /** Pixels parcourus -> mètres affichés (10 pixels = 1 mètre). */
 export function toMeters(x: number): number {
@@ -31,9 +48,9 @@ export interface MatchResult {
 }
 
 /** Renvoie le résultat si la partie est finie, sinon null. */
-export function checkEnd(racers: Racer[], elapsedMs: number): MatchResult | null {
-  const reached = racers.some((r) => r.distance >= WIN_DISTANCE);
-  const timeUp = elapsedMs >= MAX_DURATION_MS;
+export function checkEnd(racers: Racer[], elapsedMs: number, goal: number | null, maxMs: number): MatchResult | null {
+  const reached = goal !== null && racers.some((r) => r.distance >= goal);
+  const timeUp = elapsedMs >= maxMs;
   if (!reached && !timeUp) return null;
   return {
     reason: reached ? 'distance' : 'time',

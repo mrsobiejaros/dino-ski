@@ -19,7 +19,8 @@
  * avancer et qui décide s'il touche (gel / saut) ou s'il est esquivé.
  * Chez le lanceur, une copie avance dans la moitié de l'autre, juste pour l'affichage.
  *
- * Fin de partie (match.ts) : premier à 600 M, ou le plus loin après 2.5 minutes.
+ * Fin de partie (match.ts) : premier à l'objectif (1000 M solo, 600 M à deux), ou le plus loin
+ * quand le temps est écoulé (3:00 en solo, 2:30 à deux).
  * En salle, c'est l'hôte qui décide de la fin et l'envoie à tout le monde :
  * ainsi les deux joueurs voient exactement le même écran de fin.
  */
@@ -54,6 +55,9 @@ import {
   forceJump,
   freeze,
   jump,
+  setSpeedUp,
+  SPEED_UP_MULTI,
+  SPEED_UP_SOLO,
   moveHorizontal,
   slowDown,
   stepDino,
@@ -76,9 +80,12 @@ import {
 import {
   checkEnd,
   formatClock,
-  MAX_DURATION_MS,
+  maxDuration,
+  MAX_DURATION_MULTI_MS,
+  MAX_DURATION_SOLO_MS,
   toMeters,
-  WIN_DISTANCE,
+  WIN_DISTANCE_MULTI,
+  winDistance,
   type MatchResult,
   type Racer,
 } from './match.ts';
@@ -157,13 +164,13 @@ type DinoMsg =
 /* ---------- Textes, en français et en anglais ---------- */
 const TEXTS = defineTexts({
   fr: {
-    distance: (m: number) => `${m}/${WIN_DISTANCE} M`,
+    distance: (m: number, goal: number | null) => (goal === null ? `${m} M` : `${m}/${goal} M`),
     hint: 'A : SAUTER',
     throwHint: 'B : LANCER',
     you: 'TOI',
     paused: 'EN PAUSE',
     endTitle: 'FIN DE PARTIE',
-    reasonDistance: `${WIN_DISTANCE} M ATTEINTS !`,
+    reasonDistance: (goal: number) => `${goal} M ATTEINTS !`,
     reasonTime: 'TEMPS ÉCOULÉ !',
     winner: (name: string) => `GAGNANT : ${name}`,
     draw: 'ÉGALITÉ !',
@@ -174,13 +181,13 @@ const TEXTS = defineTexts({
     continue: 'A : CONTINUER',
   },
   en: {
-    distance: (m: number) => `${m}/${WIN_DISTANCE} M`,
+    distance: (m: number, goal: number | null) => (goal === null ? `${m} M` : `${m}/${goal} M`),
     hint: 'A: JUMP',
     throwHint: 'B: THROW',
     you: 'YOU',
     paused: 'PAUSED',
     endTitle: 'GAME OVER',
-    reasonDistance: `${WIN_DISTANCE} M REACHED!`,
+    reasonDistance: (goal: number) => `${goal} M REACHED!`,
     reasonTime: "TIME'S UP!",
     winner: (name: string) => `WINNER: ${name}`,
     draw: 'DRAW!',
@@ -237,6 +244,13 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     [],
   );
 
+  /** Accélération tous les 100 m : +20 % puis de moins en moins en solo (jusqu'à 1500 m), +10 % à deux. */
+  /** Distance à atteindre pour gagner : 600 M à deux, aucune en solo (null). */
+  const goal = () => winDistance(ctx.multiplayer.room !== null);
+  /** Temps maximum : 3:00 en solo, 2:30 à deux. */
+  const timeLimit = () => maxDuration(ctx.multiplayer.room !== null);
+  const speedUpRate = () => (ctx.multiplayer.room ? SPEED_UP_MULTI : SPEED_UP_SOLO);
+
   const state = useRef({
     me: createDino(),
     myStats: { thrown: 0, dodged: 0 } as TrapStats,
@@ -248,7 +262,7 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     elapsed: 0, // durée de la partie (ms)
     result: null as MatchResult | null, // rempli quand la partie est finie
     finished: false, // gameOver déjà appelé ?
-    myObstacles: generateObstacles(ctx.seed ?? 0),
+    myObstacles: generateObstacles(ctx.seed ?? 0, speedUpRate()),
     otherObstacles: new Map<string, Obstacle[]>(),
     // Pièges
     myTrap: null as TrapKind | null, // mon piège (dans le cercle), null = vide
@@ -418,7 +432,7 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
         dino = other.shown; // on dessine la version lissée
         let obs = state.otherObstacles.get(p.id);
         if (!obs) {
-          obs = generateObstacles(ctx.seed ?? 0);
+          obs = generateObstacles(ctx.seed ?? 0, speedUpRate());
           state.otherObstacles.set(p.id, obs);
         }
         obstacles = obs;
@@ -448,6 +462,8 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     (dt) => {
       const iAmPaused = ctx.lifecycle.paused;
       const inRoom = ctx.multiplayer.room !== null;
+      // Accélération tous les 100 m : +20 % puis de moins en moins en solo (jusqu'à 1500 m), +10 % à deux.
+      setSpeedUp(speedUpRate());
       // Les pièges n'existent qu'à deux (jamais en solo).
       const withTraps = inRoom && playersRef.current.length >= 2;
 
@@ -552,7 +568,7 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
           thrown: l.stats.thrown,
           dodged: l.stats.dodged,
         }));
-        const result = checkEnd(racers, state.elapsed);
+        const result = checkEnd(racers, state.elapsed, goal(), timeLimit());
         if (result) {
           if (inRoom) ctx.multiplayer.send({ type: 'end', result });
           endMatch(result);
@@ -573,7 +589,7 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
 
       // Temps restant, en haut au centre
       if (!state.result) {
-        drawText(g, formatClock(MAX_DURATION_MS - state.elapsed), width / 2, 6, {
+        drawText(g, formatClock(timeLimit() - state.elapsed), width / 2, 6, {
           color: PALETTE.snow,
           align: 'center',
         });
@@ -586,13 +602,14 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
 
   /**
    * Où en est ce joueur dans la partie, de 0 (départ) à 1 (fin).
-   * La partie finit à WIN_DISTANCE mètres OU après MAX_DURATION_MS :
+   * La partie finit à l'objectif (goal) OU quand le temps est écoulé (timeLimit) :
    * on prend celle des deux qui est la plus avancée.
    */
   function laneProgress(lane: Lane): number {
     if (state.result) return 1; // partie finie : la lune est arrivée à gauche
-    const byDistance = toMeters(lane.dino.x + lane.dino.offsetX) / WIN_DISTANCE;
-    const byTime = state.elapsed / MAX_DURATION_MS;
+    const target = goal();
+    const byDistance = target === null ? 0 : toMeters(lane.dino.x + lane.dino.offsetX) / target;
+    const byTime = state.elapsed / timeLimit();
     return Math.min(1, Math.max(byDistance, byTime));
   }
 
@@ -762,7 +779,7 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
 
     // Textes : nom du joueur (à sa couleur), distance, aide
     drawText(g, lane.name, 6, top + 6, { color: lane.color });
-    drawText(g, t.distance(toMeters(lane.dino.x + lane.dino.offsetX)), 6, top + 18);
+    drawText(g, t.distance(toMeters(lane.dino.x + lane.dino.offsetX), goal()), 6, top + 18);
     // À deux : le cercle du piège en haut à droite, et l'aide juste en dessous
     // (à côté du cercle, elle cacherait le chrono : la police fait 8 px par lettre).
     const withTraps = ctx.multiplayer.room !== null && playersRef.current.length >= 2;
@@ -792,7 +809,7 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
 
     const center = width / 2;
     drawText(g, t.endTitle, center, 12, { color: PALETTE.gold, align: 'center' });
-    drawText(g, result.reason === 'distance' ? t.reasonDistance : t.reasonTime, center, 28, {
+    drawText(g, result.reason === 'distance' ? t.reasonDistance(goal() ?? WIN_DISTANCE_MULTI) : t.reasonTime, center, 28, {
       color: PALETTE.snow,
       align: 'center',
     });
@@ -915,14 +932,14 @@ export default defineGame<DinoMsg>({
   scoreOrder: 'desc',
   howToPlay: {
     fr: [
-      `A : sauter. Premier à ${WIN_DISTANCE} M, ou le plus loin après 2:30.`,
-      'À deux : un piège toutes les 15 s, B pour le lancer.',
-      'Bleu : paralyse. Boule de neige : fait sauter.',
+      `A : sauter. Solo : va le plus loin en ${formatClock(MAX_DURATION_SOLO_MS)}.`,
+      `À deux : premier à ${WIN_DISTANCE_MULTI} M (${formatClock(MAX_DURATION_MULTI_MS)} max). B : lancer un piège.`,
+      'Piège toutes les 15 s. Bleu : paralyse. Neige : fait sauter.',
     ],
     en: [
-      `A: jump. First to ${WIN_DISTANCE} M, or furthest after 2:30.`,
-      'With two: a trap every 15 s, B to throw it.',
-      'Blue: freezes. Snowball: makes you jump.',
+      `A: jump. Solo: go as far as you can in ${formatClock(MAX_DURATION_SOLO_MS)}.`,
+      `With two: first to ${WIN_DISTANCE_MULTI} M (${formatClock(MAX_DURATION_MULTI_MS)} max). B: throw a trap.`,
+      'Trap every 15 s. Blue: freezes. Snowball: makes you jump.',
     ],
   },
 });

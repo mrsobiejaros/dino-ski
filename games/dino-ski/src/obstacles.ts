@@ -3,8 +3,8 @@
  * Pas de React ni de dessin ici.
  */
 import { createRandom } from '@gamebovh/sdk';
-import { DINO_WIDTH, type Dino } from './dino.ts';
-import { WIN_DISTANCE } from './match.ts';
+import { DINO_WIDTH, speedMultiplierAt, type Dino, type SpeedUp } from './dino.ts';
+import { TRACK_LENGTH_M } from './match.ts';
 
 export interface Obstacle {
   id: number;
@@ -33,11 +33,15 @@ const OBSTACLE_VARIANTS = [
 const MIN_GAP = 100; // 10 m, environ 1,4 s à pleine vitesse
 const MAX_GAP = 190; // 19 m, environ 2,7 s
 
-/** Génère tous les obstacles de la course à partir de la graine `seed`. */
-export function generateObstacles(seed: number): Obstacle[] {
+/**
+ * Génère tous les obstacles de la course à partir de la graine `seed`.
+ * `speedUp` : l'accélération du mode de jeu (voir dino.ts). Plus le dino va vite,
+ * plus les écarts sont grands : l'espace entre deux obstacles reste le même EN TEMPS.
+ */
+export function generateObstacles(seed: number, speedUp?: SpeedUp): Obstacle[] {
   const rand = createRandom(seed);
   const obstacles: Obstacle[] = [];
-  const maxPixels = WIN_DISTANCE * 10; // 10 px = 1 m
+  const maxPixels = TRACK_LENGTH_M * 10; // 10 px = 1 m
 
   // Premier obstacle vers 35 mètres (350 px), puis espacés aléatoirement
   let currentX = 350;
@@ -57,7 +61,8 @@ export function generateObstacles(seed: number): Obstacle[] {
     });
 
     // Espace libre aléatoire entre MIN_GAP et MAX_GAP : jamais deux obstacles collés.
-    currentX += size.width + MIN_GAP + rand() * (MAX_GAP - MIN_GAP);
+    const stretch = speedUp ? speedMultiplierAt(currentX / 10, speedUp) : 1;
+    currentX += size.width + (MIN_GAP + rand() * (MAX_GAP - MIN_GAP)) * stretch;
   }
 
   return obstacles;
