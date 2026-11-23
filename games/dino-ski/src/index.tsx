@@ -32,8 +32,8 @@ import {
   useRoomPlayers,
   type GameProps,
 } from '@gamebovh/sdk';
-import dinoUrl from './assets/dino.jpg';
-import { createDino, DINO_SIZE, jump, moveHorizontal, stepDino, type Dino } from './dino.ts';
+import dinoUrl from './assets/dino.png'; // exporté depuis "Dino 1.aseprite" (32 x 24)
+import { createDino, DINO_HEIGHT, DINO_WIDTH, jump, moveHorizontal, stepDino, type Dino } from './dino.ts';
 import {
   checkEnd,
   formatClock,
@@ -82,8 +82,9 @@ const MOON_LEFT = 213;
 const MOON_RIGHT = 230;
 const MOON_MARGIN = 10; // écart avec le bord de l'écran, au départ et à l'arrivée
 // Hauteur du sol dans les images, de 0 (tout en haut) à 1 (tout en bas) :
-// c'est là que le dino pose ses skis (le haut de l'herbe : 86 px sur 108).
-const GROUND_LINE = 86 / 108;
+// c'est là que le dino pose sa luge : sur la bande de neige (9-ligne.png,
+// de 83 à 85 px sur 108), juste au-dessus de l'herbe.
+const GROUND_LINE = 83 / 108; // le bas de la luge touche le haut de la neige
 
 /* ---------- Réglages ---------- */
 const DINO_SCREEN_X = 48; // position horizontale du dino dans sa moitié d'écran
@@ -101,6 +102,7 @@ type DinoMsg =
       height: number;
       vy: number;
       onGround: boolean;
+      facingLeft: boolean;
       paused: boolean;
       thrown: number;
       dodged: number;
@@ -272,6 +274,7 @@ if (msg.type === 'jump') {
       other.height = msg.height;
       other.vy = msg.vy;
       other.onGround = msg.onGround;
+      other.facingLeft = msg.facingLeft;
       state.otherStats.set(from.id, { thrown: msg.thrown, dodged: msg.dodged });
       setPaused(msg.paused);
     }
@@ -348,6 +351,7 @@ if (!state.result) {
             height: d.height,
             vy: d.vy,
             onGround: d.onGround,
+            facingLeft: d.facingLeft,
             paused: iAmPaused,
             thrown: state.myStats.thrown,
             dodged: state.myStats.dodged,
@@ -426,6 +430,49 @@ if (!state.result) {
     g.drawImage(img, Math.round(moonX - MOON_LEFT * scale), top, img.naturalWidth * scale, h);
   }
 
+  /**
+   * Dessine le dino, avec une petite animation faite par le code
+   * (le sprite Aseprite n'a qu'une seule image) :
+   *   - au sol : la luge tressaute d'1 pixel et de la neige gicle derrière ;
+   *   - en l'air : le dino se penche (nez en haut en montant, en bas en descendant).
+   * L'animation suit la distance parcourue (`dino.x`) : elle s'arrête en pause.
+   */
+  function drawDino(g: CanvasRenderingContext2D, dino: Dino, dx: number, groundY: number) {
+    const bob = dino.onGround && Math.floor(dino.x / 10) % 2 === 0 ? -1 : 0; // tressautement
+    const dy = Math.round(groundY - DINO_HEIGHT - dino.height) + bob;
+    const back = dino.facingLeft ? 1 : -1; // côté arrière de la luge (+1 = à droite)
+
+    // Neige qui gicle derrière la luge (seulement au sol)
+    if (dino.onGround) {
+      g.fillStyle = PALETTE.snow;
+      const rearX = dino.facingLeft ? dx + DINO_WIDTH : dx;
+      for (let i = 0; i < 4; i++) {
+        const p = (dino.x * 0.6 + i * 5) % 20; // 0 -> 20 : la particule s'éloigne puis renaît
+        const px = rearX + back * (2 + p);
+        const py = groundY - 2 - Math.round(Math.sin((p / 20) * Math.PI) * 5);
+        const size = p < 10 ? 2 : 1; // les particules rapetissent en s'éloignant
+        g.fillRect(Math.round(px), py, size, size);
+      }
+    }
+
+    if (!dinoImg.complete || dinoImg.naturalWidth === 0) {
+      g.fillStyle = PALETTE.pine; // en attendant que l'image soit chargée
+      g.fillRect(dx, dy, DINO_WIDTH, DINO_HEIGHT);
+      return;
+    }
+
+    // Inclinaison pendant le saut : proportionnelle à la vitesse verticale.
+    const tilt = dino.onGround ? 0 : Math.max(-0.35, Math.min(0.35, -dino.vy * 0.9));
+
+    g.save();
+    // On place le repère au centre du dino, on le penche, puis on le retourne s'il recule.
+    g.translate(dx + DINO_WIDTH / 2, dy + DINO_HEIGHT / 2);
+    if (dino.facingLeft) g.scale(-1, 1);
+    g.rotate(tilt);
+    g.drawImage(dinoImg, -DINO_WIDTH / 2, -DINO_HEIGHT / 2, DINO_WIDTH, DINO_HEIGHT);
+    g.restore();
+  }
+
   /** Dessine une moitié d'écran (fond, dino, textes). */
   function drawLane(g: CanvasRenderingContext2D, lane: Lane, top: number, h: number) {
     const groundY = top + Math.round(h * GROUND_LINE);
@@ -448,14 +495,7 @@ if (!state.result) {
     }
 
     // Le dino
-    const dx = Math.round(DINO_SCREEN_X + lane.dino.offsetX);
-    const dy = Math.round(groundY - DINO_SIZE - lane.dino.height);
-    if (dinoImg.complete && dinoImg.naturalWidth > 0) {
-      g.drawImage(dinoImg, dx, dy, DINO_SIZE, DINO_SIZE);
-    } else {
-      g.fillStyle = PALETTE.pine;
-      g.fillRect(dx, dy, DINO_SIZE, DINO_SIZE);
-    }
+    drawDino(g, lane.dino, Math.round(DINO_SCREEN_X + lane.dino.offsetX), groundY);
     // Textes : nom du joueur (à sa couleur), distance, aide
 // Textes : nom du joueur (à sa couleur), distance, aide
     drawText(g, lane.name, 6, top + 6, { color: lane.color });

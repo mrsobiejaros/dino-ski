@@ -4,7 +4,8 @@
  * et pour celui de l'autre joueur.
  */
 
-export const DINO_SIZE = 24; // taille de l'image du dino (pixels)
+export const DINO_WIDTH = 32; // largeur de l'image du dino (pixels)
+export const DINO_HEIGHT = 24; // hauteur de l'image du dino (pixels)
 export const RUN_SPEED = 0.07; // vitesse vers la droite (pixels par ms)
 export const MOVE_SPEED = 0.12; // vitesse de déplacement gauche/droite à l'écran (pixels par ms)
 export const MAX_OFFSET_LEFT = -36; // limite gauche (48 - 36 = 12 px du bord gauche)
@@ -22,10 +23,12 @@ export interface Dino {
   /** Vitesse verticale (positive = monte). */
   vy: number;
   onGround: boolean;
+  /** true quand le dino regarde vers la gauche (il recule) : l'image est retournée. */
+  facingLeft: boolean;
 }
 
 export function createDino(): Dino {
-  return { x: 0, offsetX: 0, height: 0, vy: 0, onGround: true };
+  return { x: 0, offsetX: 0, height: 0, vy: 0, onGround: true, facingLeft: false };
 }
 
 /** Saute, seulement si le dino touche le sol. Renvoie true si le saut a eu lieu. */
@@ -38,7 +41,8 @@ export function jump(d: Dino): boolean {
 
 /** Déplace le dino de gauche (-1) à droite (1) sur l'écran. */
 export function moveHorizontal(d: Dino, dir: -1 | 0 | 1, dt: number): void {
-  if (dir === 0) return;
+  if (dir === 0) return; // sans bouton, le dino garde la direction où il regardait
+  d.facingLeft = dir === -1;
   d.offsetX += dir * MOVE_SPEED * dt;
   d.offsetX = Math.max(MAX_OFFSET_LEFT, Math.min(MAX_OFFSET_RIGHT, d.offsetX));
 }
