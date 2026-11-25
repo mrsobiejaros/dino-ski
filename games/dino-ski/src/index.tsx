@@ -47,7 +47,8 @@ const DINO_SKINS = [dinoRouge, dinoBleu]; // index 0 = moitié du haut (ou solo)
 // Les sprites des obstacles (0 = tas de neige, 1 = bonhomme de neige)
 import tasNeigeUrl from './assets/obstacles/Tas_neige.png';
 import snowmanUrl from './assets/obstacles/Snowman.png';
-const OBSTACLE_SKINS = [tasNeigeUrl, snowmanUrl];
+import oiseauUrl from './assets/obstacles/Oiseau.png';
+const OBSTACLE_SKINS = [tasNeigeUrl, snowmanUrl, oiseauUrl]; // 2 = l'oiseau volant
 import {
   createDino,
   DINO_HEIGHT,
@@ -56,6 +57,9 @@ import {
   freeze,
   jump,
   setSpeedUp,
+  SPEED_UP_EVERY_M,
+  SPEED_UP_LAST_M,
+  speedMultiplierAt,
   SPEED_UP_MULTI,
   SPEED_UP_SOLO,
   moveHorizontal,
@@ -103,6 +107,13 @@ import sapinsProches from './assets/fond/6-sapins-proches.png';
 import rochers from './assets/fond/7-rochers.png';
 import herbe from './assets/fond/8-herbe.png';
 import ligne from './assets/fond/9-ligne.png';
+// Les décors des biomes (mêmes dimensions que les calques : 240 x 108, fond transparent).
+import observatoire from './assets/biomes/observatoire.png';
+import lampadaires from './assets/biomes/lampadaires.png';
+import muret from './assets/biomes/muret.png';
+import barriere from './assets/biomes/barriere.png';
+import buissons from './assets/biomes/buissons.png';
+import musique from './assets/sons/musique.mp3';
 
 // `speed` : vitesse de défilement du calque par rapport au dino.
 //   0   = ne bouge pas (très loin : le ciel)
@@ -111,27 +122,49 @@ import ligne from './assets/fond/9-ligne.png';
 // Plus un calque est loin, plus il est lent : c'est ce qui donne la profondeur.
 // `moon: true` : ce calque ne défile pas, il suit la progression de la partie
 // (voir drawMoon).
-const BACKGROUND_LAYERS = [
+//
+// Les BIOMES : les 3 couches du décor (loin, milieu, près) changent d'image au fil de la course.
+//   biome 1 : montagne     / grands sapins / petits sapins
+//   biome 2 : observatoire / lampadaires   / barrière
+//   biome 3 : observatoire / muret         / buissons
+// puis on recommence au biome 1. Une couche "biomes" donne une image par biome (dans cet ordre).
+interface BackgroundLayer {
+  url?: string;
+  biomes?: string[];
+  speed: number;
+  moon?: boolean;
+  smooth?: boolean;
+}
+const BACKGROUND_LAYERS: BackgroundLayer[] = [
   { url: ciel, speed: 0 },
   { url: lune, speed: 0, moon: true },
-  // `smooth: true` : calque très lent, déplacé au sous-pixel pour éviter les à-coups (voir drawSubPixel).
-  { url: montagne, speed: 0.1, smooth: true },
+  // Couche lointaine. `smooth: true` : très lente, déplacée au sous-pixel (voir drawSubPixel).
+  { biomes: [montagne, observatoire, observatoire], speed: 0.1, smooth: true },
   { url: nuages, speed: 0.2 },
-  { url: sapinsLoin, speed: 0.4 },
-  { url: sapinsProches, speed: 0.6 },
+  { biomes: [sapinsLoin, lampadaires, muret], speed: 0.4 }, // couche du milieu
+  { biomes: [sapinsProches, barriere, buissons], speed: 0.6 }, // couche proche
   { url: rochers, speed: 1 },
   { url: herbe, speed: 1 },
   { url: ligne, speed: 1 },
 ];
+// C'est la couche lointaine (la 1re couche à biomes) qui décide : ses images défilent l'une
+// après l'autre (montagne, observatoire, observatoire...). Les couches du milieu et proche
+// montrent, dans chaque tranche verticale de l'écran, le biome de l'image lointaine juste
+// au-dessus. À la jonction entre deux images lointaines, elles s'effacent en douceur
+// (BIOME_FADE) : les arbres disparaissent et réapparaissent en fondu, sans coupure nette.
 // Où se trouve la lune dans 2-lune.png (en pixels de l'image de 240 x 108) :
 // de x = 213 à x = 230. Si vous changez l'image de la lune, mettez ces valeurs à jour.
 const MOON_LEFT = 213;
+// Largeur du fondu de chaque côté d'une jonction de biomes, en fraction de la hauteur de la piste.
+const BIOME_FADE = 0.4;
 const MOON_RIGHT = 230;
 const MOON_MARGIN = 10; // écart avec le bord de l'écran, au départ et à l'arrivée
 // Hauteur du sol dans les images, de 0 (tout en haut) à 1 (tout en bas) :
 // c'est là que le dino pose sa luge : sur la bande de neige (9-ligne.png,
 // de 83 à 85 px sur 108), juste au-dessus de l'herbe.
-const GROUND_LINE = 83 / 108; // le bas de la luge touche le haut de la neige
+const GROUND_LINE = 83 / 108;
+/** Le décor (hors sol) ne défile jamais plus vite que 1,5 fois la vitesse de départ. */
+const BG_MAX_FACTOR = 1.5; // le bas de la luge touche le haut de la neige
 
 /* ---------- Réglages ---------- */
 const DINO_SCREEN_X = 48; // position horizontale du dino dans sa moitié d'écran
@@ -233,16 +266,24 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
 
   const dinoImgs = useMemo(() => DINO_SKINS.map(loadImage), []);
   const obstacleImgs = useMemo(() => OBSTACLE_SKINS.map(loadImage), []);
-  const backgroundLayers = useMemo(
-    () =>
-      BACKGROUND_LAYERS.map((layer) => ({
-        img: loadImage(layer.url),
+  const backgroundLayers = useMemo(() => {
+    // Une seule image par fichier : l'observatoire, utilisé par deux biomes, est le même objet.
+    const loaded = new Map<string, HTMLImageElement>();
+    const load = (url: string) => {
+      let img = loaded.get(url);
+      if (!img) {
+        img = loadImage(url);
+        loaded.set(url, img);
+      }
+      return img;
+    };
+    return BACKGROUND_LAYERS.map((layer) => ({
+        imgs: (layer.biomes ?? [layer.url ?? '']).map(load),
         speed: layer.speed,
         moon: layer.moon === true,
         smooth: layer.smooth === true,
-      })),
-    [],
-  );
+      }));
+  }, []);
 
   /** Accélération tous les 100 m : +20 % puis de moins en moins en solo (jusqu'à 1500 m), +10 % à deux. */
   /** Distance à atteindre pour gagner : 600 M à deux, aucune en solo (null). */
@@ -292,6 +333,26 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
       offResume();
     };
   }, [ctx]);
+
+  /* ----- Musique de fond ----- */
+  // En boucle et pas trop fort. Elle ne joue que si le son de la console est activé,
+  // se met en pause pendant la pause, s'arrête à l'écran de fin, et quand on quitte le jeu.
+  const music = useMemo(() => {
+    const audio = new Audio(musique);
+    audio.loop = true;
+    audio.volume = 0.25;
+    return audio;
+  }, []);
+  useEffect(() => () => music.pause(), [music]);
+  useGameLoop(
+    ctx,
+    () => {
+      const shouldPlay = !ctx.audio.muted && !ctx.lifecycle.paused && !state.result;
+      if (shouldPlay && music.paused) void music.play().catch(() => {});
+      else if (!shouldPlay && !music.paused) music.pause();
+    },
+    { runWhilePaused: true },
+  );
 
   /* ----- Fin de partie ----- */
   /** Fige la partie et affiche l'écran de fin (chez l'hôte et chez les autres). */
@@ -734,6 +795,9 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
   function drawLane(g: CanvasRenderingContext2D, lane: Lane, top: number, h: number) {
     const groundY = top + Math.round(h * GROUND_LINE);
     const camX = lane.dino.x - DINO_SCREEN_X;
+    // Caméra du décor lointain : elle suit le dino, mais sans dépasser BG_MAX_FACTOR fois
+    // la vitesse de départ (sinon, avec les accélérations, le fond défilerait trop vite).
+    const bgCamX = backgroundDistance(lane.dino.x) - DINO_SCREEN_X;
 
     // On ne dessine que dans cette moitié de l'écran.
     g.save();
@@ -746,9 +810,22 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     g.fillStyle = PALETTE.night;
     g.fillRect(0, top, width, h);
     const progress = laneProgress(lane);
+    // La couche lointaine (1re couche à biomes) : sa vitesse et la largeur de ses images.
+    let far: FarBiomes | null = null;
     for (const layer of backgroundLayers) {
-      if (layer.moon) drawMoon(g, layer.img, progress, top, h);
-      else drawLayer(g, layer.img, camX * layer.speed, top, h, layer.smooth);
+      if (layer.moon) drawMoon(g, layer.imgs[0], progress, top, h);
+      else {
+        // Le sol (vitesse 1) suit exactement le dino, sinon les obstacles glisseraient dessus.
+        const cam = layer.speed >= 1 ? camX : bgCamX;
+        if (layer.imgs.length > 1) {
+          if (far === null) {
+            const tileW = scaledImage(layer.imgs[0], h)?.width;
+            if (!tileW) continue;
+            far = { speed: layer.speed, tileW, count: layer.imgs.length };
+          }
+          drawBiomeLayer(g, layer.imgs, cam, layer.speed, far, top, h, layer.smooth);
+        } else drawLayer(g, layer.imgs[0], cam * layer.speed, top, h, layer.smooth);
+      }
     }
 
     // Les obstacles sur la piste
@@ -756,7 +833,9 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     for (const obs of lane.obstacles) {
       const ox = Math.round(obs.x - camX);
       if (ox + obs.width < 0 || ox > width) continue;
-      const oy = Math.round(groundY - obs.height);
+      // Un obstacle volant monte et descend d'un pixel, comme s'il battait des ailes.
+      const flap = obs.fly > 0 && Math.floor(obs.x / 7 + camX / 20) % 2 === 0 ? -1 : 0;
+      const oy = Math.round(groundY - obs.fly - obs.height) + flap;
       const img = obstacleImgs[obs.kind];
       if (img && img.complete && img.naturalWidth > 0) {
         g.drawImage(img, ox, oy, obs.width, obs.height);
@@ -870,6 +949,111 @@ function drawLayer(
   drawSubPixel(g, smooth, () => {
     for (let x = -offset; x < screenW; x += tileW) g.drawImage(scaled, x, top);
   });
+}
+
+/** La couche lointaine, qui décide des biomes : sa vitesse, la largeur de ses images, nb de biomes. */
+interface FarBiomes {
+  speed: number;
+  tileW: number;
+  count: number;
+}
+
+/**
+ * Biome de l'image lointaine n°k (k = 1, 2, 3... en partant de la droite de l'écran au départ) :
+ * (k - 1) modulo le nombre de biomes. k <= 0 : les images déjà à l'écran au départ (biome 1).
+ */
+function farBiome(k: number, far: FarBiomes): number {
+  return k <= 0 ? 0 : (k - 1) % far.count;
+}
+
+let biomeCanvas: HTMLCanvasElement | null = null; // canvas hors écran, jamais ajouté à la page
+
+/**
+ * Dessine une couche à biomes.
+ * - La couche lointaine : ses images entières, l'une après l'autre.
+ * - Les autres : dans la tranche de chaque image lointaine, l'image de son biome (répétée).
+ * Autour d'une jonction entre deux biomes différents, chaque couche s'efface en fondu.
+ */
+function drawBiomeLayer(
+  g: CanvasRenderingContext2D,
+  imgs: HTMLImageElement[],
+  cam: number,
+  speed: number,
+  far: FarBiomes,
+  top: number,
+  h: number,
+  smooth: boolean,
+) {
+  const screenW = g.canvas.width;
+  const farScroll = cam * far.speed;
+  const first = Math.floor(farScroll / far.tileW);
+  const isFar = speed <= far.speed;
+
+  // On dessine la couche sur un canvas à part (une piste de haut), puis on y "gomme" les jonctions.
+  if (!biomeCanvas) biomeCanvas = document.createElement('canvas');
+  if (biomeCanvas.width !== screenW || biomeCanvas.height !== h) {
+    biomeCanvas.width = screenW;
+    biomeCanvas.height = h;
+  }
+  const off = biomeCanvas.getContext('2d');
+  if (!off) return;
+  off.imageSmoothingEnabled = false;
+  off.globalCompositeOperation = 'source-over';
+  off.clearRect(0, 0, screenW, h);
+
+  const fade = Math.round(h * BIOME_FADE);
+  for (let k = first; k * far.tileW - farScroll < screenW; k++) {
+    const x0 = Math.round(k * far.tileW - farScroll);
+    const x1 = Math.round((k + 1) * far.tileW - farScroll);
+    const img = imgs[farBiome(k, far)];
+    if (!img) continue;
+    if (isFar) {
+      // La couche lointaine : une image entière par tranche.
+      const tile = scaledImage(img, h);
+      if (tile) drawSubPixel(off, smooth, () => off.drawImage(tile, k * far.tileW - farScroll, 0));
+      continue;
+    }
+    off.save();
+    off.beginPath();
+    off.rect(x0, 0, x1 - x0, h);
+    off.clip();
+    drawLayer(off, img, cam * speed, 0, h, smooth);
+    off.restore();
+  }
+  // Puis, à chaque jonction entre deux biomes différents, on gomme la couche en fondu.
+  for (let k = first; k * far.tileW - farScroll < screenW; k++) {
+    const x1 = Math.round((k + 1) * far.tileW - farScroll);
+    if (farBiome(k + 1, far) !== farBiome(k, far) && x1 - fade < screenW && x1 + fade > 0) {
+      const grad = off.createLinearGradient(x1 - fade, 0, x1 + fade, 0);
+      grad.addColorStop(0, 'rgba(0,0,0,0)');
+      grad.addColorStop(0.5, 'rgba(0,0,0,1)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      off.globalCompositeOperation = 'destination-out';
+      off.fillStyle = grad;
+      off.fillRect(x1 - fade, 0, fade * 2, h);
+      off.globalCompositeOperation = 'source-over';
+    }
+  }
+  g.drawImage(biomeCanvas, 0, top);
+}
+
+/**
+ * Distance "vue par le décor" quand le dino a parcouru `x` pixels.
+ * Tant que le dino va moins vite que BG_MAX_FACTOR fois sa vitesse de départ, c'est `x`.
+ * Au-delà, le décor (hors sol) avance comme si le dino restait à BG_MAX_FACTOR :
+ * les accélérations se voient au sol et aux obstacles, sans que le fond file à toute allure.
+ */
+function backgroundDistance(x: number): number {
+  if (x <= 0) return x;
+  const stepPx = SPEED_UP_EVERY_M * 10; // un palier = 100 m = 1000 px
+  const lastStep = SPEED_UP_LAST_M / SPEED_UP_EVERY_M; // ensuite, la vitesse ne change plus
+  let total = 0;
+  let k = 0;
+  for (; k < lastStep && (k + 1) * stepPx <= x; k++) {
+    total += stepPx * Math.min(1, BG_MAX_FACTOR / speedMultiplierAt(k * SPEED_UP_EVERY_M));
+  }
+  // Le reste, au rythme du palier où se trouve le dino.
+  return total + (x - k * stepPx) * Math.min(1, BG_MAX_FACTOR / speedMultiplierAt(k * SPEED_UP_EVERY_M));
 }
 
 /**

@@ -54,7 +54,8 @@
       },
       "minPlayers": 1,
       "maxPlayers": 2,
-      "module": "games/dino-ski/src/index.tsx"
+      "module": "games/dino-ski/src/index.tsx",
+      "cartridge": { "color": "#c8283a", "labelColor": "#fff4e0", "textColor": "#0b1e3f" }
     }
   ]
 }

@@ -51,6 +51,7 @@ export function CartridgeScreen({
 
   return (
     <Frame
+      theme={def?.theme}
       title={
         <>
           <span>{entry.name}</span>
@@ -82,6 +83,49 @@ export function CartridgeScreen({
   );
 }
 
+/** Choix « créer ou rejoindre une salle », ouvert par un jeu qui a son propre menu. */
+export function RoomsScreen({
+  entry,
+  def,
+  onCreate,
+  onJoin,
+  onBack,
+}: {
+  entry: CatalogEntry;
+  def: GameDefinition;
+  onCreate: () => void;
+  onJoin: () => void;
+  onBack: () => void;
+}) {
+  const t = useT();
+  return (
+    <Frame
+      theme={def.theme}
+      title={
+        <>
+          <span>{entry.name}</span>
+          <span className="title-right">{t.playersShort(entry.minPlayers, entry.maxPlayers)}</span>
+        </>
+      }
+      footer={
+        <>
+          <Hint>{t.hintOk}</Hint>
+          <Hint>{t.hintBack}</Hint>
+        </>
+      }
+    >
+      <MenuList
+        onBack={onBack}
+        items={[
+          { label: t.createRoom, onSelect: onCreate },
+          { label: t.joinRoom, onSelect: onJoin },
+          { label: t.back, onSelect: onBack },
+        ]}
+      />
+    </Frame>
+  );
+}
+
 /** Classement local d'un jeu (inclut les scores reçus des autres joueurs). */
 export function ScoresScreen({
   entry,
@@ -108,7 +152,7 @@ export function ScoresScreen({
   });
 
   return (
-    <Frame title={t.top10(entry.name)} footer={<Hint>{t.hintBack}</Hint>}>
+    <Frame theme={def.theme} title={t.top10(entry.name)} footer={<Hint>{t.hintBack}</Hint>}>
       {scores === null ? (
         <p className="loading">{t.loading}</p>
       ) : scores.length === 0 ? (

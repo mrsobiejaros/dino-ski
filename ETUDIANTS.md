@@ -16,7 +16,7 @@ Ce document est **la règle du jeu technique** du challenge. Lisez-le en entier 
 7. [Ce que vous pouvez modifier](#7-ce-que-vous-pouvez-modifier)
 8. [Ce que vous ne devez pas modifier](#8-ce-que-vous-ne-devez-pas-modifier)
 9. [Règles de code](#9-règles-de-code)
-10. [Images, sons et polices](#10-images-sons-et-polices)
+10. [Images, sons, polices et habillage](#10-images-sons-polices-et-habillage)
 11. [Travailler en équipe avec Git](#11-travailler-en-équipe-avec-git)
 12. [Rendre votre jeu](#12-rendre-votre-jeu)
 13. [Questions fréquentes](#13-questions-fréquentes)
@@ -160,11 +160,12 @@ Ajoutez **une seule ligne** à la fin de la liste `games`, sans toucher aux autr
 | Champ | Règle |
 | --- | --- |
 | `id` | identique au nom du dossier |
-| `name` | court : il doit tenir sur la cartouche du menu (environ 18 caractères) |
+| `name` | court : il doit tenir sur la cartouche du menu (environ 18 caractères). La console affiche toujours le **nom anglais** (`en.name`), dans les deux langues : c'est le titre du jeu |
 | `team` | le nom de votre équipe |
 | `version` | `1.0.0`, puis augmentez à chaque version rendue |
 | `description` | 2 lignes au maximum à l'écran |
 | `en` | le nom et la description en anglais (obligatoire, vérifié par `pnpm check`) |
+| `cartridge` | facultatif : couleurs de la cartouche dans le menu (section 10, « Habiller votre jeu ») |
 | `minPlayers`, `maxPlayers` | entre 1 et 4. `minPlayers: 1` permet de jouer seul ; `maxPlayers` supérieur à 1 ouvre les salles |
 | `module` | toujours `games/<id>/src/index.tsx` |
 
@@ -249,6 +250,8 @@ Tout ce dont votre jeu a besoin passe par `ctx`. **N'allez rien chercher ailleur
 | `storage` | sauvegardes et classement local | `await ctx.storage.getLeaderboard()` |
 | `multiplayer` | salle, joueurs, messages | `ctx.multiplayer.send({ type: 'tir' })` |
 | `seed` | graine aléatoire, la même pour toute la salle | `createRandom(ctx.seed)` |
+| `launch` | comment le jeu a été lancé : `'menu'`, `'solo'` ou `'room'` (utile avec votre propre menu) | `ctx.launch === 'room'` |
+| `console` | ouvrir un écran de la console depuis votre menu | `ctx.console.open('rooms')` |
 | `manifest` | votre ligne de `games.json` | `ctx.manifest.name` |
 
 Hooks et outils fournis : `useGameLoop`, `useButton`, `useCanvas`, `usePaused`, `useRoomPlayers`, `useMessages`, `useScoreGossip`, `drawText`, `formatTime`, `createRandom`, `PALETTE`, `PLAYER_COLORS`.
@@ -289,7 +292,7 @@ function CourseDeLuges({ ctx }: GameProps) {
 | --- | --- |
 | Votre code | tous les textes affichés, avec `defineTexts` (une clé oubliée d'un côté fait échouer `pnpm check`) |
 | `howToPlay` | `{ fr: [...], en: [...] }`, 3 lignes dans chaque langue |
-| `games.json` | `name` et `description` en français, et leur version anglaise dans `"en"` |
+| `games.json` | `name` et `description` en français, et leur version anglaise dans `"en"`. Le nom affiché est toujours `en.name` |
 | Vos images | évitez d'y écrire du texte ; sinon, une image par langue |
 
 La cartouche modèle `games/_template` montre l'exemple complet. Testez toujours votre jeu dans les deux langues.
@@ -298,8 +301,8 @@ La cartouche modèle `games/_template` montre l'exemple complet. Testez toujours
 
 La console fait tout le travail de salle à votre place :
 
-1. Un joueur choisit **Créer une salle** : la console affiche un code de 4 lettres.
-2. Jusqu'à 3 autres joueurs choisissent **Rejoindre une salle** et tapent ce code.
+1. Un joueur choisit **Créer une salle** : la console affiche un code de 4 lettres et un **QR code**.
+2. Jusqu'à 3 autres joueurs **scannent le QR code** avec l'appareil photo de leur téléphone (ils arrivent directement dans la salle), ou choisissent **Rejoindre une salle** et tapent le code (au clavier, ou au clavier du téléphone en touchant le code).
 3. L'hôte (le premier arrivé) appuie sur A : **votre jeu démarre chez tout le monde en même temps**, avec la **même `ctx.seed`**.
 
 Dans votre jeu :
@@ -379,7 +382,7 @@ git checkout -- chemin/du/fichier
 | Pas d'erreur dans la console du navigateur (F12) pendant une partie | Un jeu qui plante affiche « ERREUR DE CARTOUCHE » au lieu de s'afficher |
 | Contenu adapté à une soirée d'entreprise | Pas de violence réaliste, pas de contenu choquant, rien sur des personnes réelles |
 
-## 10. Images, sons et polices
+## 10. Images, sons, polices et habillage
 
 - **Images** : déposez-les dans `games/<votre-jeu>/src/assets/` et importez-les. Le fichier `src/assets.d.ts` du modèle rend cet import possible :
 
@@ -395,11 +398,111 @@ git checkout -- chemin/du/fichier
 
 - **Sons** : utilisez d'abord les sons de la console (`ctx.audio.play('coin')`) ou `ctx.audio.tone(...)`. Si vous importez vos propres fichiers MP3 ou OGG, **ne les jouez que si `ctx.audio.muted` est faux**, et gardez-les courts.
 
-- **Polices** : la police pixel de la console est disponible avec `drawText` ou la constante `FONT`. N'importez pas d'autre police depuis Internet.
+- **Polices** : la police pixel de la console est disponible avec `drawText` ou la constante `FONT`. Vous pouvez aussi utiliser **votre propre police**, déposée dans votre dossier : voir « Habiller votre jeu » ci-dessous. Jamais de police chargée depuis Internet.
 
 - **Droits** : uniquement des créations de l'équipe, ou des ressources dont la licence autorise l'usage (CC0, CC-BY avec le crédit dans le README de votre jeu). Pas de personnage, de logo ou de musique d'un jeu ou d'une marque existante.
 
 - **Poids** : visez moins de 2 Mo pour tout le dossier de votre jeu. Les joueurs le téléchargeront sur leur téléphone, parfois en 4G.
+
+### Habiller votre jeu : cartouche, fiche, menu, police
+
+Tout se fait **dans votre dossier**, rien à toucher ailleurs. Chaque point est facultatif. La cartouche modèle `games/_template` montre la cartouche, la fiche et la police ; le menu propre est détaillé ci-dessous.
+
+**1. L'image de la cartouche.** Déposez `games/<votre-jeu>/cartridge.png`, à côté de `package.json` : elle remplace le dessin de l'étiquette dans le menu.
+
+- Taille : **84 × 42 pixels** (ou 168 × 84, 252 × 126 pour plus de détails), moins de 100 Ko. Vérifié par `pnpm check`.
+- Pas de texte important dessus : le nom du jeu est écrit juste en dessous par la console.
+- Les couleurs de la cartouche se choisissent dans votre ligne de `games.json` :
+
+  ```json
+  "cartridge": { "color": "#d7263d", "labelColor": "#fff4e0", "textColor": "#0b1e3f" }
+  ```
+
+  `color` : la coque, `labelColor` : l'étiquette, `textColor` : le nom et l'équipe. Format `#rrggbb`.
+
+**2. La fiche du jeu.** Avant la partie, la console affiche la fiche de votre jeu : règles, puis Solo, Créer une salle, Rejoindre, Scores. Ces écrans (fiche, salle d'attente, scores) **restent ceux de la console** : vous n'avez pas à recoder les salles ni les scores, et ils marchent pareil pour tous les jeux. Vous pouvez en revanche les habiller avec `theme` dans `defineGame` :
+
+```tsx
+import menuBackground from './assets/menu.png';
+
+export default defineGame({
+  component: CourseDeLuges,
+  scoreOrder: 'desc',
+  theme: {
+    background: menuBackground, // image 240 x 216 ; un voile sombre garde le texte lisible
+    accent: '#f2b134',          // titre, curseur, ligne choisie
+    titleFont: TITLE_FONT,      // police du titre (point 3)
+  },
+  howToPlay: { fr: [...], en: [...] },
+});
+```
+
+Choisissez une image de fond peu chargée : le texte de la console s'écrit par-dessus.
+
+**Votre propre menu (écran titre).** Si vous voulez votre écran titre avec vos boutons (Solo, Multijoueur, Langue, Quitter...), déclarez `menu: 'game'` : la console **saute sa fiche** et lance directement votre jeu, qui affiche son menu. Pour tout ce qui touche aux salles, aux scores et aux réglages, votre menu **ouvre les écrans de la console** : vous ne recodez jamais les salles.
+
+| Bouton de votre menu | Ce que vous appelez |
+| --- | --- |
+| Solo | rien : votre jeu commence sa partie |
+| Multijoueur | `ctx.console.open('rooms')` : créer ou rejoindre une salle (habillés avec votre `theme`) |
+| Rejoindre (si vous le voulez à part) | `ctx.console.open('join')` |
+| Records | `ctx.console.open('scores')` |
+| Langue, réglages | `ctx.console.open('settings')` : au retour, votre jeu est relancé dans la nouvelle langue |
+| Quitter | `ctx.lifecycle.exitToMenu()` : retour au carrousel des cartouches |
+
+Quand un écran de la console s'ouvre, votre jeu se ferme ; il est relancé ensuite. `ctx.launch` vous dit comment :
+
+- `'menu'` : depuis le carrousel ou au retour d'un écran de la console : affichez votre menu ;
+- `'room'` : la partie en salle commence (l'hôte a lancé) : **allez directement au jeu**, sans menu ;
+- `'solo'` : le joueur a choisi « Rejouer » : allez directement au jeu.
+
+```tsx
+function PeakRivals({ ctx }: GameProps) {
+  // En salle ou après « Rejouer », pas de menu : on joue tout de suite.
+  const screen = useRef(ctx.launch === 'menu' ? 'menu' : 'game');
+  const choice = useRef(0); // ligne choisie dans le menu, avec haut / bas
+
+  useButton(ctx, 'a', {
+    onPress: () => {
+      if (screen.current !== 'menu') return;
+      if (choice.current === 0) screen.current = 'game';           // SOLO
+      if (choice.current === 1) ctx.console.open('rooms');         // MULTIJOUEUR
+      if (choice.current === 2) ctx.console.open('settings');      // LANGUE
+      if (choice.current === 3) ctx.lifecycle.exitToMenu();        // QUITTER
+    },
+  });
+  // ... haut / bas pour changer de ligne, dessin du menu ou de la partie dans useGameLoop
+}
+
+export default defineGame({
+  component: PeakRivals,
+  scoreOrder: 'desc',
+  menu: 'game',
+  theme: { background: fond, accent: '#f2b134', titleFont: TITRE }, // pour les écrans de salle et de scores
+  howToPlay: { fr: [...], en: [...] }, // toujours obligatoire
+});
+```
+
+Avec votre propre menu, les règles ne s'affichent plus sur la fiche de la console : prévoyez un **tutoriel** dans votre menu. Pendant une partie en salle, `ctx.console.open()` est ignoré. Le menu pause de la console (Échap, Start + Select) reste disponible partout.
+
+**3. Une police à vous.** Déposez le fichier dans `src/assets/` (`.woff2` de préférence, sinon `.woff`, `.ttf`, `.otf`), déclarez-la, puis utilisez-la avec `drawText` :
+
+```tsx
+import { defineFont, drawText } from '@gamebovh/sdk';
+import maPolice from './assets/ma-police.woff2';
+
+const TITLE_FONT = defineFont('MaPolice', maPolice);
+
+// dans la boucle de dessin :
+drawText(g, 'SCORE 12', 4, 4, { font: TITLE_FONT, size: 12 });
+```
+
+- Elle se charge toute seule au premier usage ; en attendant, c'est la police de la console qui s'affiche.
+- Elle doit contenir les **accents** (é, è, à, ç...) : le jeu est en français.
+- Elle doit rester **lisible en petit**, sur un téléphone. Testez-la à la taille où vous l'utilisez.
+- Moins de **200 Ko** (vérifié par `pnpm check`), jamais chargée depuis Internet, et avec une licence qui autorise l'usage (OFL, CC0...), créditée dans le README de votre jeu.
+- Votre police sert dans votre jeu et pour le titre de votre fiche. Le reste de la console garde sa police.
+- Si `import ... from './assets/ma-police.woff2'` est souligné en rouge, ajoutez à votre `src/assets.d.ts` les déclarations `*.woff2`, `*.woff`, `*.ttf`, `*.otf` de la cartouche modèle.
 
 ## 11. Travailler en équipe avec Git
 
