@@ -16,8 +16,16 @@ export const TRAP_KINDS: TrapKind[] = ['freeze', 'snowball'];
 
 export const TRAP_EVERY_MS = 15000; // un nouveau piège toutes les 15 s
 export const TRAP_SPIN_MS = 900; // durée de la "roulette" dans le cercle avant de pouvoir lancer
-export const PROJECTILE_SIZE = 8; // diamètre du projectile (pixels)
-export const PROJECTILE_FLY = 3; // hauteur du bas du projectile au-dessus du sol (pixels)
+/**
+ * Taille de chaque projectile (celle de son image, en pixels), hauteur de son bas au-dessus
+ * du sol, et marge retirée de chaque côté pour la hitbox (les bords pâles ne touchent pas).
+ *   - 'freeze'   : assets/pieges/glace.png, une traînée de glace qui glisse au ras du sol ;
+ *   - 'snowball' : assets/pieges/boule-neige.png.
+ */
+export const PROJECTILE_SHAPES: Record<TrapKind, { width: number; height: number; fly: number; margin: number }> = {
+  freeze: { width: 31, height: 9, fly: 0, margin: 4 },
+  snowball: { width: 8, height: 8, fly: 3, margin: 1 },
+};
 const PROJECTILE_SPEED = 0.05; // vitesse du projectile vers la gauche (pixels par ms)
 const SPAWN_AHEAD = 196; // il apparaît juste après le bord droit de l'écran de la cible
 const FORGET_BEHIND = 120; // une fois loin derrière le dino, on l'oublie
@@ -59,12 +67,13 @@ export function stepProjectiles(
   for (let i = list.length - 1; i >= 0; i--) {
     const p = list[i];
     p.x -= PROJECTILE_SPEED * dt;
-    const pLeft = p.x + 1;
-    const pRight = p.x + PROJECTILE_SIZE - 1;
+    const shape = PROJECTILE_SHAPES[p.kind];
+    const pLeft = p.x + shape.margin;
+    const pRight = p.x + shape.width - shape.margin;
 
     if (!p.dodged) {
       const overlapX = pRight > dinoLeft && pLeft < dinoRight;
-      const overlapY = dino.height < PROJECTILE_FLY + PROJECTILE_SIZE - 2;
+      const overlapY = dino.height < shape.fly + shape.height - 2;
       if (overlapX && overlapY) {
         hits.push(p.kind);
         list.splice(i, 1);

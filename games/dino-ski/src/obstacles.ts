@@ -30,10 +30,15 @@ const OBSTACLE_VARIANTS = [
   { width: 24, height: 22, margin: 7, top: 5, fly: 0 }, // 1 : Bonhomme de neige (plus haut)
   // 2 : Oiseau volant, juste au-dessus de la tête du dino : il passe dessous s'il reste au sol,
   // mais s'il saute (ou si une boule de neige le fait sauter), il le prend en pleine tête.
-  { width: 23, height: 14, margin: 3, top: 2, fly: DINO_HEIGHT + 3 },
+  { width: 25, height: 11, margin: 3, top: 2, fly: DINO_HEIGHT + 3 },
 ];
 const FLYING_KIND = 2;
 const FLYING_CHANCE = 0.25; // environ 1 obstacle sur 4 est un oiseau
+// Hauteur d'un oiseau (bas de l'image au-dessus du sol), tirée au hasard pour chacun.
+// Minimum : il passe toujours au-dessus d'un dino resté au sol (sa tête est à 22 px).
+// Maximum : il reste sous le sommet d'un saut (52 px), donc sauter dessous le fait toucher.
+const FLY_MIN = 22;
+const FLY_MAX = 40;
 
 /** Haut de la tête du dino, mesuré depuis le bas de son image (la 1re ligne du sprite est vide). */
 const DINO_HEAD = DINO_HEIGHT - 2;
@@ -62,6 +67,8 @@ export function generateObstacles(seed: number, speedUp?: SpeedUp): Obstacle[] {
     // Un oiseau de temps en temps, sinon un obstacle au sol (tas ou bonhomme).
     const kind = rand() < FLYING_CHANCE ? FLYING_KIND : Math.floor(rand() * 2);
     const size = OBSTACLE_VARIANTS[kind];
+    // Un oiseau vole à une hauteur au hasard, entre FLY_MIN et FLY_MAX.
+    const fly = kind === FLYING_KIND ? Math.round(FLY_MIN + rand() * (FLY_MAX - FLY_MIN)) : size.fly;
 
     obstacles.push({
       id: id++,
@@ -69,7 +76,7 @@ export function generateObstacles(seed: number, speedUp?: SpeedUp): Obstacle[] {
       x: Math.round(currentX),
       width: size.width,
       height: size.height,
-      fly: size.fly,
+      fly,
       resolved: false,
     });
 

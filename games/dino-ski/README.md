@@ -23,6 +23,8 @@ Un dino à skis dévale la montagne. Il avance tout seul : à toi de sauter au b
 
 ## Crédits
 - `src/assets/obstacles/Oiseau.png` : oiseau volant, dessiné par l'équipe.
+- `src/assets/pieges/glace.png` : piège de glace (paralyse), dessiné par l'équipe.
+- `src/assets/pieges/boule-neige.png` : piège boule de neige, dessiné par l'équipe.
 - `src/assets/logo.png` : logo du jeu (dino au bonnet de Noël), dessiné par l'équipe.
 - `src/assets/sons/musique.mp3` : musique de fond, fournie par l'équipe.
 - `src/assets/dino.svg` : dino provisoire, dessiné pour le projet.

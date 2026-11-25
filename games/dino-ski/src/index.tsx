@@ -48,6 +48,10 @@ const DINO_SKINS = [dinoRouge, dinoBleu]; // index 0 = moitié du haut (ou solo)
 import tasNeigeUrl from './assets/obstacles/Tas_neige.png';
 import snowmanUrl from './assets/obstacles/Snowman.png';
 import oiseauUrl from './assets/obstacles/Oiseau.png';
+import glaceUrl from './assets/pieges/glace.png';
+import bouleNeigeUrl from './assets/pieges/boule-neige.png';
+// Image de chaque piège qu'on peut lancer.
+const TRAP_SKINS: Record<TrapKind, string> = { freeze: glaceUrl, snowball: bouleNeigeUrl };
 const OBSTACLE_SKINS = [tasNeigeUrl, snowmanUrl, oiseauUrl]; // 2 = l'oiseau volant
 import {
   createDino,
@@ -70,8 +74,7 @@ import {
 import { applyRemoteState, createRemote, remoteJump, stepRemote, type RemoteDino } from './remote.ts';
 import { checkObstacles, generateObstacles, type Obstacle } from './obstacles.ts';
 import {
-  PROJECTILE_FLY,
-  PROJECTILE_SIZE,
+  PROJECTILE_SHAPES,
   randomTrap,
   spawnProjectile,
   stepProjectiles,
@@ -109,8 +112,6 @@ import herbe from './assets/fond/8-herbe.png';
 import ligne from './assets/fond/9-ligne.png';
 // Les décors des biomes (mêmes dimensions que les calques : 240 x 108, fond transparent).
 import observatoire from './assets/biomes/observatoire.png';
-import lampadaires from './assets/biomes/lampadaires.png';
-import muret from './assets/biomes/muret.png';
 import barriere from './assets/biomes/barriere.png';
 import buissons from './assets/biomes/buissons.png';
 import musique from './assets/sons/musique.mp3';
@@ -124,9 +125,8 @@ import musique from './assets/sons/musique.mp3';
 // (voir drawMoon).
 //
 // Les BIOMES : les 3 couches du décor (loin, milieu, près) changent d'image au fil de la course.
-//   biome 1 : montagne     / grands sapins / petits sapins
-//   biome 2 : observatoire / lampadaires   / barrière
-//   biome 3 : observatoire / muret         / buissons
+//   biome 1 : montagne     / grands sapins     / petits sapins
+//   biome 2 : observatoire / barrière en bois  / buissons
 // puis on recommence au biome 1. Une couche "biomes" donne une image par biome (dans cet ordre).
 interface BackgroundLayer {
   url?: string;
@@ -139,10 +139,10 @@ const BACKGROUND_LAYERS: BackgroundLayer[] = [
   { url: ciel, speed: 0 },
   { url: lune, speed: 0, moon: true },
   // Couche lointaine. `smooth: true` : très lente, déplacée au sous-pixel (voir drawSubPixel).
-  { biomes: [montagne, observatoire, observatoire], speed: 0.1, smooth: true },
+  { biomes: [montagne, observatoire], speed: 0.1, smooth: true },
   { url: nuages, speed: 0.2 },
-  { biomes: [sapinsLoin, lampadaires, muret], speed: 0.4 }, // couche du milieu
-  { biomes: [sapinsProches, barriere, buissons], speed: 0.6 }, // couche proche
+  { biomes: [sapinsLoin, barriere], speed: 0.4 }, // couche du milieu
+  { biomes: [sapinsProches, buissons], speed: 0.6 }, // couche proche
   { url: rochers, speed: 1 },
   { url: herbe, speed: 1 },
   { url: ligne, speed: 1 },
@@ -156,7 +156,7 @@ const BACKGROUND_LAYERS: BackgroundLayer[] = [
 // de x = 213 à x = 230. Si vous changez l'image de la lune, mettez ces valeurs à jour.
 const MOON_LEFT = 213;
 // Largeur du fondu de chaque côté d'une jonction de biomes, en fraction de la hauteur de la piste.
-const BIOME_FADE = 0.4;
+const BIOME_FADE = 0.12;
 const MOON_RIGHT = 230;
 const MOON_MARGIN = 10; // écart avec le bord de l'écran, au départ et à l'arrivée
 // Hauteur du sol dans les images, de 0 (tout en haut) à 1 (tout en bas) :
@@ -266,6 +266,10 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
 
   const dinoImgs = useMemo(() => DINO_SKINS.map(loadImage), []);
   const obstacleImgs = useMemo(() => OBSTACLE_SKINS.map(loadImage), []);
+  const trapImgs = useMemo(
+    () => ({ freeze: loadImage(TRAP_SKINS.freeze), snowball: loadImage(TRAP_SKINS.snowball) }),
+    [],
+  );
   const backgroundLayers = useMemo(() => {
     // Une seule image par fichier : l'observatoire, utilisé par deux biomes, est le même objet.
     const loaded = new Map<string, HTMLImageElement>();
@@ -749,27 +753,24 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     }
   }
 
-  /** Dessine un projectile (rond de PROJECTILE_SIZE pixels), avec une petite traînée. */
-  function drawProjectile(g: CanvasRenderingContext2D, kind: TrapKind, cx: number, cy: number, trail: boolean) {
-    const r = PROJECTILE_SIZE / 2;
-    const main = kind === 'freeze' ? '#2f8cff' : PALETTE.snow;
-    const light = kind === 'freeze' ? '#bfe3ff' : '#ffffff';
-    const shade = kind === 'freeze' ? '#1b4fb3' : '#9fb4c8';
-    if (trail) {
-      g.fillStyle = kind === 'freeze' ? 'rgba(120, 190, 255, 0.5)' : 'rgba(255, 255, 255, 0.5)';
-      g.fillRect(Math.round(cx + r), Math.round(cy - 1), 4, 2);
-      g.fillRect(Math.round(cx + r + 5), Math.round(cy), 2, 1);
-    }
-    g.fillStyle = shade;
-    g.beginPath();
-    g.arc(cx, cy, r, 0, Math.PI * 2);
-    g.fill();
-    g.fillStyle = main;
-    g.beginPath();
-    g.arc(cx - 0.5, cy - 0.5, r - 1, 0, Math.PI * 2);
-    g.fill();
-    g.fillStyle = light; // reflet
-    g.fillRect(Math.round(cx - 2), Math.round(cy - 2), 2, 2);
+  /**
+   * Dessine l'image d'un piège, son coin haut-gauche en (x, y).
+   * `maxW` : si l'image est plus large, on la réduit (pour la faire tenir dans le cercle).
+   */
+  function drawProjectile(g: CanvasRenderingContext2D, kind: TrapKind, x: number, y: number, maxW = Infinity) {
+    const img = trapImgs[kind];
+    if (!img.complete || img.naturalWidth === 0) return;
+    const scale = Math.min(1, maxW / img.naturalWidth);
+    const w = Math.round(img.naturalWidth * scale);
+    const h = Math.round(img.naturalHeight * scale);
+    g.drawImage(img, Math.round(x), Math.round(y), w, h);
+  }
+
+  /** Dessine l'image d'un piège centrée en (cx, cy), à au plus 14 px de large (dans le cercle). */
+  function drawTrapIcon(g: CanvasRenderingContext2D, kind: TrapKind, cx: number, cy: number) {
+    const shape = PROJECTILE_SHAPES[kind];
+    const scale = Math.min(1, 14 / shape.width);
+    drawProjectile(g, kind, cx - (shape.width * scale) / 2, cy - (shape.height * scale) / 2, 14);
   }
 
   /** Le cercle "à la Mario Kart" en haut à droite : vide, en roulette, ou avec le piège. */
@@ -785,9 +786,9 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     if (lane.spinning) {
       // La roulette : les pièges défilent très vite.
       const kind = TRAP_KINDS[Math.floor(state.trapSpin / 90) % TRAP_KINDS.length];
-      drawProjectile(g, kind, cx, cy, false);
+      drawTrapIcon(g, kind, cx, cy);
     } else if (lane.trap) {
-      drawProjectile(g, lane.trap, cx, cy, false);
+      drawTrapIcon(g, lane.trap, cx, cy);
     }
   }
 
@@ -848,9 +849,9 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     // Les projectiles qui foncent sur ce dino
     for (const p of lane.projectiles) {
       const px = p.x - camX;
-      if (px + PROJECTILE_SIZE < 0 || px > width) continue;
-      const r = PROJECTILE_SIZE / 2;
-      drawProjectile(g, p.kind, Math.round(px + r), groundY - PROJECTILE_FLY - r, true);
+      const shape = PROJECTILE_SHAPES[p.kind];
+      if (px + shape.width < 0 || px > width) continue;
+      drawProjectile(g, p.kind, px, groundY - shape.fly - shape.height);
     }
 
     // Le dino
