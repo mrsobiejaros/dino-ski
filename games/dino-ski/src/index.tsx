@@ -148,15 +148,13 @@ const BACKGROUND_LAYERS: BackgroundLayer[] = [
   { url: ligne, speed: 1 },
 ];
 // C'est la couche lointaine (la 1re couche à biomes) qui décide : ses images défilent l'une
-// après l'autre (montagne, observatoire, observatoire...). Les couches du milieu et proche
-// montrent, dans chaque tranche verticale de l'écran, le biome de l'image lointaine juste
-// au-dessus. À la jonction entre deux images lointaines, elles s'effacent en douceur
-// (BIOME_FADE) : les arbres disparaissent et réapparaissent en fondu, sans coupure nette.
+// après l'autre (montagne, observatoire, montagne...). Les couches du milieu et proche défilent
+// en images entières : tant qu'un bout de montagne est encore à l'écran, les sapins restent ;
+// dès qu'elle est sortie à gauche, la barrière et les buissons arrivent par la droite (et
+// inversement). Voir drawBiomeLayer.
 // Où se trouve la lune dans 2-lune.png (en pixels de l'image de 240 x 108) :
 // de x = 213 à x = 230. Si vous changez l'image de la lune, mettez ces valeurs à jour.
 const MOON_LEFT = 213;
-// Largeur du fondu de chaque côté d'une jonction de biomes, en fraction de la hauteur de la piste.
-const BIOME_FADE = 0.12;
 const MOON_RIGHT = 230;
 const MOON_MARGIN = 10; // écart avec le bord de l'écran, au départ et à l'arrivée
 // Hauteur du sol dans les images, de 0 (tout en haut) à 1 (tout en bas) :
@@ -813,6 +811,8 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
     const progress = laneProgress(lane);
     // La couche lointaine (1re couche à biomes) : sa vitesse et la largeur de ses images.
     let far: FarBiomes | null = null;
+    // La dernière couche à biomes dessinée (juste derrière la suivante) : voir drawBiomeLayer.
+    let behind: BiomeStrip | null = null;
     for (const layer of backgroundLayers) {
       if (layer.moon) drawMoon(g, layer.imgs[0], progress, top, h);
       else {
@@ -824,7 +824,11 @@ function DinoSki({ ctx }: GameProps<DinoMsg>) {
             if (!tileW) continue;
             far = { speed: layer.speed, tileW, count: layer.imgs.length };
           }
-          drawBiomeLayer(g, layer.imgs, cam, layer.speed, far, top, h, layer.smooth);
+          const tileW = scaledImage(layer.imgs[0], h)?.width;
+          if (!tileW) continue;
+          const strip: BiomeStrip = { speed: layer.speed, tileW };
+          drawBiomeLayer(g, layer.imgs, cam, strip, behind, far, top, h, layer.smooth);
+          if (layer.speed > far.speed) behind = strip;
         } else drawLayer(g, layer.imgs[0], cam * layer.speed, top, h, layer.smooth);
       }
     }
@@ -967,75 +971,91 @@ function farBiome(k: number, far: FarBiomes): number {
   return k <= 0 ? 0 : (k - 1) % far.count;
 }
 
-let biomeCanvas: HTMLCanvasElement | null = null; // canvas hors écran, jamais ajouté à la page
+/** Une couche à biomes : sa vitesse et la largeur de ses images (à l'écran). */
+interface BiomeStrip {
+  speed: number;
+  tileW: number;
+}
 
 /**
- * Dessine une couche à biomes.
- * - La couche lointaine : ses images entières, l'une après l'autre.
- * - Les autres : dans la tranche de chaque image lointaine, l'image de son biome (répétée).
- * Autour d'une jonction entre deux biomes différents, chaque couche s'efface en fondu.
+ * Biome de l'image n°k d'une couche (sauf la lointaine). Chaque image prend son biome au moment
+ * où elle entre à l'écran par la droite : celui de l'image lointaine la plus à GAUCHE de l'écran
+ * à cet instant. Ainsi, tant que la montagne est visible, les nouvelles images sont des sapins ;
+ * dès qu'elle est sortie, c'est la barrière / les buissons (et inversement).
+ */
+function entryBiome(k: number, strip: BiomeStrip, screenW: number, far: FarBiomes): number {
+  const enterCam = (k * strip.tileW - screenW) / strip.speed; // caméra quand elle entre à droite
+  return farBiome(Math.floor((enterCam * far.speed) / far.tileW), far);
+}
+
+/**
+ * L'image n°k de `strip` reste-t-elle, pendant tout son passage à l'écran, devant des images
+ * du biome `biome` de la couche `behind` ? (On regarde sa position tous les 2 pixels.)
+ * Sert pour les buissons : ils ne doivent jamais dépasser la barrière qui est derrière eux.
+ */
+function staysInFront(
+  k: number,
+  strip: BiomeStrip,
+  behind: BiomeStrip,
+  biome: number,
+  screenW: number,
+  far: FarBiomes,
+): boolean {
+  const enterCam = (k * strip.tileW - screenW) / strip.speed;
+  const exitCam = ((k + 1) * strip.tileW) / strip.speed;
+  const step = 2 / strip.speed;
+  for (let cam = enterCam; cam <= exitCam; cam += step) {
+    // Partie visible de l'image à ce moment...
+    const left = Math.max(0, k * strip.tileW - cam * strip.speed);
+    const right = Math.min(screenW, (k + 1) * strip.tileW - cam * strip.speed);
+    if (right <= left) continue;
+    // ... et les images de la couche de derrière qui s'y trouvent.
+    const scroll = cam * behind.speed;
+    const first = Math.floor((left + scroll) / behind.tileW);
+    const last = Math.floor((right - 1 + scroll) / behind.tileW);
+    for (let j = first; j <= last; j++) {
+      if (entryBiome(j, behind, screenW, far) !== biome) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Dessine une couche à biomes, en images entières (jamais coupées).
+ * - La couche lointaine : ses images l'une après l'autre (montagne, observatoire...).
+ * - Les autres : chaque image prend son biome en entrant à l'écran (voir entryBiome).
+ *   Une couche devant une autre (les buissons devant la barrière) ne montre une image du
+ *   2e biome que si celle de derrière est là pendant tout son passage ; sinon, la place reste
+ *   vide : les buissons ne dépassent jamais la barrière.
  */
 function drawBiomeLayer(
   g: CanvasRenderingContext2D,
   imgs: HTMLImageElement[],
   cam: number,
-  speed: number,
+  strip: BiomeStrip,
+  behind: BiomeStrip | null,
   far: FarBiomes,
   top: number,
   h: number,
   smooth: boolean,
 ) {
   const screenW = g.canvas.width;
-  const farScroll = cam * far.speed;
-  const first = Math.floor(farScroll / far.tileW);
-  const isFar = speed <= far.speed;
+  const tiles = imgs.map((img) => scaledImage(img, h));
+  const isFar = strip.speed <= far.speed;
+  const tileW = strip.tileW;
+  const scroll = smooth ? cam * strip.speed : Math.floor(cam * strip.speed);
 
-  // On dessine la couche sur un canvas à part (une piste de haut), puis on y "gomme" les jonctions.
-  if (!biomeCanvas) biomeCanvas = document.createElement('canvas');
-  if (biomeCanvas.width !== screenW || biomeCanvas.height !== h) {
-    biomeCanvas.width = screenW;
-    biomeCanvas.height = h;
-  }
-  const off = biomeCanvas.getContext('2d');
-  if (!off) return;
-  off.imageSmoothingEnabled = false;
-  off.globalCompositeOperation = 'source-over';
-  off.clearRect(0, 0, screenW, h);
-
-  const fade = Math.round(h * BIOME_FADE);
-  for (let k = first; k * far.tileW - farScroll < screenW; k++) {
-    const x0 = Math.round(k * far.tileW - farScroll);
-    const x1 = Math.round((k + 1) * far.tileW - farScroll);
-    const img = imgs[farBiome(k, far)];
-    if (!img) continue;
-    if (isFar) {
-      // La couche lointaine : une image entière par tranche.
-      const tile = scaledImage(img, h);
-      if (tile) drawSubPixel(off, smooth, () => off.drawImage(tile, k * far.tileW - farScroll, 0));
-      continue;
+  drawSubPixel(g, smooth, () => {
+    for (let k = Math.floor(scroll / tileW); k * tileW - scroll < screenW; k++) {
+      let biome = isFar ? farBiome(k, far) : entryBiome(k, strip, screenW, far);
+      // Biome 2 (barrière / buissons) devant une autre couche : seulement si elle suit.
+      if (!isFar && biome > 0 && behind && !staysInFront(k, strip, behind, biome, screenW, far)) {
+        biome = -1;
+      }
+      const tile = tiles[biome];
+      if (tile) g.drawImage(tile, k * tileW - scroll, top);
     }
-    off.save();
-    off.beginPath();
-    off.rect(x0, 0, x1 - x0, h);
-    off.clip();
-    drawLayer(off, img, cam * speed, 0, h, smooth);
-    off.restore();
-  }
-  // Puis, à chaque jonction entre deux biomes différents, on gomme la couche en fondu.
-  for (let k = first; k * far.tileW - farScroll < screenW; k++) {
-    const x1 = Math.round((k + 1) * far.tileW - farScroll);
-    if (farBiome(k + 1, far) !== farBiome(k, far) && x1 - fade < screenW && x1 + fade > 0) {
-      const grad = off.createLinearGradient(x1 - fade, 0, x1 + fade, 0);
-      grad.addColorStop(0, 'rgba(0,0,0,0)');
-      grad.addColorStop(0.5, 'rgba(0,0,0,1)');
-      grad.addColorStop(1, 'rgba(0,0,0,0)');
-      off.globalCompositeOperation = 'destination-out';
-      off.fillStyle = grad;
-      off.fillRect(x1 - fade, 0, fade * 2, h);
-      off.globalCompositeOperation = 'source-over';
-    }
-  }
-  g.drawImage(biomeCanvas, 0, top);
+  });
 }
 
 /**
