@@ -985,13 +985,15 @@ interface BiomeStrip {
  */
 function entryBiome(k: number, strip: BiomeStrip, screenW: number, far: FarBiomes): number {
   const enterCam = (k * strip.tileW - screenW) / strip.speed; // caméra quand elle entre à droite
+  // L'image lointaine la plus à gauche de l'écran à ce moment.
   return farBiome(Math.floor((enterCam * far.speed) / far.tileW), far);
 }
 
 /**
  * L'image n°k de `strip` reste-t-elle, pendant tout son passage à l'écran, devant des images
  * du biome `biome` de la couche `behind` ? (On regarde sa position tous les 2 pixels.)
- * Sert pour les buissons : ils ne doivent jamais dépasser la barrière qui est derrière eux.
+ * Ainsi les buissons ne dépassent jamais la barrière, et les petits sapins n'arrivent jamais
+ * devant la barrière : ils attendent les grands sapins.
  */
 function staysInFront(
   k: number,
@@ -1024,9 +1026,8 @@ function staysInFront(
  * Dessine une couche à biomes, en images entières (jamais coupées).
  * - La couche lointaine : ses images l'une après l'autre (montagne, observatoire...).
  * - Les autres : chaque image prend son biome en entrant à l'écran (voir entryBiome).
- *   Une couche devant une autre (les buissons devant la barrière) ne montre une image du
- *   2e biome que si celle de derrière est là pendant tout son passage ; sinon, la place reste
- *   vide : les buissons ne dépassent jamais la barrière.
+ *   Une couche devant une autre ne montre une image que si celle de derrière a le même biome
+ *   pendant tout son passage (voir staysInFront) ; sinon, la place reste vide.
  */
 function drawBiomeLayer(
   g: CanvasRenderingContext2D,
@@ -1045,11 +1046,22 @@ function drawBiomeLayer(
   const tileW = strip.tileW;
   const scroll = smooth ? cam * strip.speed : Math.floor(cam * strip.speed);
 
+  if (isFar) {
+    // La couche lointaine : ses images entières, l'une après l'autre.
+    drawSubPixel(g, smooth, () => {
+      for (let k = Math.floor(scroll / tileW); k * tileW - scroll < screenW; k++) {
+        const tile = tiles[farBiome(k, far)];
+        if (tile) g.drawImage(tile, k * tileW - scroll, top);
+      }
+    });
+    return;
+  }
   drawSubPixel(g, smooth, () => {
     for (let k = Math.floor(scroll / tileW); k * tileW - scroll < screenW; k++) {
-      let biome = isFar ? farBiome(k, far) : entryBiome(k, strip, screenW, far);
-      // Biome 2 (barrière / buissons) devant une autre couche : seulement si elle suit.
-      if (!isFar && biome > 0 && behind && !staysInFront(k, strip, behind, biome, screenW, far)) {
+      let biome = entryBiome(k, strip, screenW, far);
+      // Devant une autre couche : seulement si celle de derrière montre le même biome
+      // (pas de buissons au-delà de la barrière, pas de petits sapins devant la barrière).
+      if (biome >= 0 && behind && !staysInFront(k, strip, behind, biome, screenW, far)) {
         biome = -1;
       }
       const tile = tiles[biome];
